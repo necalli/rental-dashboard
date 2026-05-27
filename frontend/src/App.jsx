@@ -1371,7 +1371,7 @@ export default function App() {
     }
   }
 
-  const railWidthClass = railCollapsed ? 'w-[84px]' : 'w-[340px]'
+  const railWidthClass = railCollapsed ? 'w-full lg:w-[84px]' : 'w-full lg:w-[340px]'
   const openDatePicker = (ref) => {
     const input = ref?.current
     if (!input) return
@@ -2370,7 +2370,7 @@ export default function App() {
         </SheetContent>
       </Sheet>
 
-      <div className="mx-auto max-w-7xl px-6 py-6">
+      <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <header className="mb-6">
           <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Rental Dashboard</p>
           <h1 className="text-3xl font-semibold tracking-tight">Rental Dashboard</h1>
@@ -2688,7 +2688,7 @@ export default function App() {
           )}
         </aside>
 
-        <main className="flex-1 space-y-6">
+        <main className="min-w-0 flex-1 space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="inline-flex rounded-full border border-border/60 bg-background/60 p-1 text-sm">
               <Button
