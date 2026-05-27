@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "phase": "mvp",
+  "placeholder": false,
+  "tools": [
+    "tool.search_runs_list",
+    "tool.search_run_get",
+    "tool.search_listings_list",
+    "tool.search_ingest_listings",
+    "tool.listings_list",
+    "tool.listing_get",
+    "tool.reviews_list",
+    "tool.listing_summary_get",
+    "tool.search_create",
+    "tool.listing_ingest_url"
+  ],
+  "trigger_keywords": [
+    "search run",
+    "search runs",
+    "run id",
+    "search listings",
+    "listing id",
+    "listing detail",
+    "listing details",
+    "listing summary",
+    "reviews for",
+    "queue search",
+    "queue ingest",
+    "ingest this listing",
+    "capture this listing",
+    "airbnb url"
+  ]
+}

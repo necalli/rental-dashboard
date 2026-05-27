@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "phase": "mvp",
+  "placeholder": false,
+  "tools": [
+    "tool.metrics_jobs",
+    "tool.jobs_list",
+    "tool.job_get"
+  ],
+  "trigger_keywords": [
+    "pipeline health",
+    "health snapshot",
+    "health check",
+    "metrics",
+    "latency",
+    "parser drift",
+    "jobs status",
+    "job status",
+    "failed jobs",
+    "running jobs"
+  ]
+}

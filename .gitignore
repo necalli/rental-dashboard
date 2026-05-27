@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+frontend/dist/
+
+# Env
+default.env
+.env
+.env.*
+!.env.example
+
+# Runtime data
+backend/data/
+backend/raw/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors and local artifacts
+.vscode/
+.idea/
+.claude/
+chatlog_*.txt
+.codex_write_probe
+docs/*.docx
+frontend/src/_write_test.txt
+frontend/src/python_write_test.txt

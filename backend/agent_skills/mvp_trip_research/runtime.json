@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "phase": "mvp",
+  "placeholder": false,
+  "tools": [
+    "tool.trip_research_tavily"
+  ],
+  "trigger_keywords": [
+    "things to do",
+    "tripadvisor",
+    "trip plan",
+    "itinerary",
+    "activities in",
+    "recommend activities",
+    "what should we do",
+    "family friendly activities",
+    "food tours"
+  ]
+}

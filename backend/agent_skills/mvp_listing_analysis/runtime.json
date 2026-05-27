@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "phase": "mvp",
+  "placeholder": false,
+  "tools": [
+    "tool.listing_summary_get",
+    "tool.listing_compare_create",
+    "tool.listing_get",
+    "tool.reviews_list"
+  ],
+  "trigger_keywords": [
+    "compare listings",
+    "compare these listings",
+    "listing comparison",
+    "which listing is better",
+    "best listing",
+    "tradeoff",
+    "tradeoffs",
+    "pros and cons",
+    "pick the better option"
+  ]
+}

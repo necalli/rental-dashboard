@@ -1,0 +1,10 @@
+# Deprecated Drive-copy Colab flow
+
+This file used to contain a personal Google Drive copy-based notebook flow.
+For the public GitHub version, use:
+
+- `Single Cell Colab Flow Example.txt`
+- `docs/colab.md`
+
+The public flow clones the repo from GitHub into `/content/rental-dashboard`,
+uses temporary Colab proxy URLs, and keeps API keys in runtime variables only.

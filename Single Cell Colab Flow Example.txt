@@ -1,0 +1,227 @@
+# Rental Dashboard single-cell Colab bootstrap
+# Paste into one Google Colab cell and run.
+# Uses temporary Colab proxy URLs; no ngrok token or Google Drive mount required.
+
+DASHBOARD_REPO = "https://github.com/necalli/rental-dashboard.git"
+DASHBOARD_BRANCH = "main"
+DASHBOARD_DIR = "/content/rental-dashboard"
+
+# Optional runtime keys. Leave blank for no-key local testing.
+RENTAL_LLM_API_KEY = ""
+RENTAL_CLAUDE_API_KEY = ""
+RENTAL_GEOAPIFY_API_KEY = ""
+RENTAL_TAVILY_API_KEY = ""
+
+import json
+import os
+import pathlib
+import subprocess
+import textwrap
+import time
+
+import requests
+
+procs = []
+logs = []
+
+
+def sh(cmd, check=True):
+    p = subprocess.run(["bash", "-lc", cmd], text=True)
+    if check and p.returncode != 0:
+        raise RuntimeError(f"Command failed ({p.returncode}): {cmd}")
+
+
+def start_bg(name, cmd, log_path, cwd=None, env=None):
+    log_file = open(log_path, "w", encoding="utf-8")
+    p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
+    procs.append((name, p))
+    logs.append(log_file)
+    return p
+
+
+def wait_http(url, timeout=180):
+    end = time.time() + timeout
+    last = None
+    while time.time() < end:
+        try:
+            r = requests.get(url, timeout=8)
+            if r.status_code < 500:
+                return r
+            last = f"status={r.status_code}"
+        except Exception as exc:
+            last = str(exc)
+        time.sleep(2)
+    raise RuntimeError(f"Timeout waiting for {url}. Last error: {last}")
+
+
+def tail(path, lines=80):
+    try:
+        return subprocess.check_output(["bash", "-lc", f"tail -n {int(lines)} {path}"], text=True)
+    except Exception:
+        return f"(could not read {path})"
+
+
+print("Step 1/8: Cleanup")
+sh("for p in 3000 5002; do lsof -t -i tcp:$p | xargs -r kill -9; done", check=False)
+sh("pkill -f 'python app.py' || true", check=False)
+sh("pkill -f 'python worker.py' || true", check=False)
+sh("pkill -f 'vite.config.colab.mjs' || true", check=False)
+
+print("Step 2/8: System dependencies")
+sh("apt-get update -y")
+sh("apt-get install -y curl git jq lsof patch")
+sh("curl -fsSL https://deb.nodesource.com/setup_20.x | bash -")
+sh("apt-get install -y nodejs")
+sh("node -v && npm -v")
+
+print("Step 3/8: Clone dashboard")
+sh(f"rm -rf {DASHBOARD_DIR}")
+sh(f"git clone --depth 1 --branch {DASHBOARD_BRANCH} {DASHBOARD_REPO} {DASHBOARD_DIR}")
+
+print("Step 4/8: Python dependencies and Playwright")
+sh("python -m pip install -q --upgrade pip")
+sh(f"python -m pip install -q -r {DASHBOARD_DIR}/backend/requirements.txt")
+sh("python -m playwright install --with-deps chromium")
+
+print("Step 5/8: Start backend")
+backend_env = os.environ.copy()
+backend_env.update({
+    "BACKEND_HOST": "0.0.0.0",
+    "BACKEND_PORT": "5002",
+    "BACKEND_DEBUG": "false",
+    "BACKEND_CORS_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000",
+    "RENTAL_DATA_DIR": f"{DASHBOARD_DIR}/backend/data",
+    "RENTAL_RAW_DIR": f"{DASHBOARD_DIR}/backend/raw",
+    "RENTAL_DB_PATH": f"{DASHBOARD_DIR}/backend/data/rental_dashboard.db",
+    "RENTAL_CAPTURE_RESPONSE_URL_ALLOWLIST": "StaysSearch,Search,search,Explore,Stays,graphql,api/v3,StaysPdpSections,StaysPdpReviewsQuery",
+    "RENTAL_CAPTURE_RESPONSE_DOMAINS": "airbnb.com,airbnb.com.sg",
+    "RENTAL_CAPTURE_TIMEOUT_MS": "240000",
+    "RENTAL_CAPTURE_MAX_RESPONSES": "200",
+    "RENTAL_CAPTURE_LOG_METRICS": "true",
+    "RENTAL_CAPTURE_BLOCK_RESOURCES": "true",
+    "RENTAL_CAPTURE_BLOCKED_RESOURCE_TYPES": "image,media,font",
+    "RENTAL_CAPTURE_ADAPTIVE_LISTING_NAV": "true",
+    "RENTAL_CAPTURE_LISTING_RESPONSE_TARGET": "10",
+    "RENTAL_CAPTURE_LISTING_NAV_WAIT_CAP_MS": "1300",
+    "RENTAL_CAPTURE_LISTING_NETWORKIDLE_FALLBACK_MS": "500",
+    "RENTAL_CAPTURE_MIN_INTERVAL_MS": "3000",
+    "VITE_ENABLE_AGENT_CHAT": "true",
+    "RENTAL_AGENT_RUNTIME": "agent_sdk" if RENTAL_CLAUDE_API_KEY else "deterministic",
+    "RENTAL_AGENT_FANOUT_ENABLED": "true",
+    "RENTAL_AGENT_FANOUT_MAX_WORKERS": "3",
+    "RENTAL_AGENT_FANOUT_TIMEOUT_MS": "10000",
+    "RENTAL_CLAUDE_MAX_TOKENS": "2000",
+    "RENTAL_AGENT_CLEAN_RESPONSE_STYLE": "true",
+    "RENTAL_AGENT_SDK_PERMISSION_MODE": "default",
+    "RENTAL_AGENT_SDK_NATIVE_SKILLS_ENABLED": "true",
+    "RENTAL_AGENT_SDK_ALLOWED_BUILTINS": "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,ToolSearch,Skill,Agent,AskUserQuestion,TodoWrite",
+    "RENTAL_AGENT_SDK_DISALLOW_BUILTINS": "true",
+})
+
+optional_keys = {
+    "RENTAL_LLM_API_KEY": RENTAL_LLM_API_KEY,
+    "RENTAL_CLAUDE_API_KEY": RENTAL_CLAUDE_API_KEY,
+    "RENTAL_GEOAPIFY_API_KEY": RENTAL_GEOAPIFY_API_KEY,
+    "RENTAL_TAVILY_API_KEY": RENTAL_TAVILY_API_KEY,
+}
+for key, value in optional_keys.items():
+    if value:
+        backend_env[key] = value
+
+pathlib.Path(f"{DASHBOARD_DIR}/backend/data").mkdir(parents=True, exist_ok=True)
+pathlib.Path(f"{DASHBOARD_DIR}/backend/raw").mkdir(parents=True, exist_ok=True)
+
+start_bg(
+    "backend",
+    ["python", "app.py"],
+    "/content/rental_backend.log",
+    cwd=f"{DASHBOARD_DIR}/backend",
+    env=backend_env,
+)
+
+try:
+    health = wait_http("http://127.0.0.1:5002/health", timeout=180).json()
+except Exception as exc:
+    print(tail("/content/rental_backend.log"))
+    raise exc
+
+print("Backend health:", health)
+
+print("Step 6/8: Start workers")
+worker_base_env = backend_env.copy()
+worker_base_env["RENTAL_WORKER_HEARTBEAT_SECONDS"] = "30"
+
+for worker_id in ["colab-w1", "colab-w2"]:
+    worker_env = worker_base_env.copy()
+    worker_env["RENTAL_WORKER_ID"] = worker_id
+    start_bg(
+        worker_id,
+        ["python", "worker.py"],
+        f"/content/rental_worker_{worker_id}.log",
+        cwd=f"{DASHBOARD_DIR}/backend",
+        env=worker_env,
+    )
+
+print("Step 7/8: Install frontend dependencies")
+sh(f"cd {DASHBOARD_DIR}/frontend && npm install")
+
+vite_colab = textwrap.dedent("""
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:5002',
+        changeOrigin: true
+      },
+      '/health': {
+        target: 'http://127.0.0.1:5002',
+        changeOrigin: true
+      }
+    }
+  },
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src')
+    }
+  }
+})
+""").strip() + "\n"
+
+pathlib.Path(f"{DASHBOARD_DIR}/frontend/vite.config.colab.mjs").write_text(vite_colab, encoding="utf-8")
+pathlib.Path(f"{DASHBOARD_DIR}/frontend/.env.local").write_text(
+    "VITE_API_BASE_URL=.\nVITE_ENABLE_AGENT_CHAT=true\n",
+    encoding="utf-8",
+)
+
+print("Step 8/8: Start frontend")
+start_bg(
+    "frontend",
+    ["npm", "run", "dev", "--", "--config", "vite.config.colab.mjs", "--host", "0.0.0.0", "--port", "3000"],
+    "/content/rental_frontend.log",
+    cwd=f"{DASHBOARD_DIR}/frontend",
+)
+
+wait_http("http://127.0.0.1:3000", timeout=180)
+
+from google.colab import output
+
+frontend_url = output.eval_js("google.colab.kernel.proxyPort(3000)")
+backend_url = output.eval_js("google.colab.kernel.proxyPort(5002)")
+
+print("\n=== READY ===")
+print("FRONTEND_URL:", frontend_url)
+print("BACKEND_URL :", backend_url)
+print("\nLogs:")
+print("- backend :", "/content/rental_backend.log")
+print("- worker 1:", "/content/rental_worker_colab-w1.log")
+print("- worker 2:", "/content/rental_worker_colab-w2.log")
+print("- frontend:", "/content/rental_frontend.log")

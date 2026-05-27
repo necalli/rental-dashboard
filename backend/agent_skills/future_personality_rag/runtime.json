@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "phase": "phase_9b",
+  "placeholder": false,
+  "tools": [
+    "tool.personality_rag_context",
+    "tool.personality_rag_upsert"
+  ],
+  "trigger_keywords": [
+    "based on my past",
+    "based on my preferences",
+    "past trips",
+    "my preferences",
+    "use my memory",
+    "trip memory",
+    "remember this",
+    "save this preference",
+    "store this in memory"
+  ]
+}
