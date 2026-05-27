@@ -241,7 +241,6 @@ class PlaywrightCapture:
         target: int,
         max_wait_ms: int,
     ) -> Dict[str, Any]:
-        started = time.monotonic()
         target = max(1, int(target or 1))
         max_wait_ms = max(0, int(max_wait_ms or 0))
         if len(responses) >= target or max_wait_ms <= 0:
@@ -256,7 +255,7 @@ class PlaywrightCapture:
             remaining = max_wait_ms - elapsed_ms
             sleep_ms = min(max(50, self.adaptive_wait_poll_ms), remaining)
             await page.wait_for_timeout(sleep_ms)
-            elapsed_ms = int((time.monotonic() - started) * 1000)
+            elapsed_ms += int(sleep_ms)
             if len(responses) >= target:
                 return {
                     "satisfied": True,
