@@ -11,7 +11,7 @@ from .airbnb_search_parser_v1 import parse_search_from_responses_with_meta
 from .parser_drift import compact_parser_meta
 from .playwright_capture import PlaywrightCapture
 from .rate_limiter import RateLimiter
-from .raw_store import write_raw_payload
+from .job_support import CaptureAccessPolicy, CapturePayloadStore, JobMetricRecorder
 from .listing_schema import normalize_listing, validate_listing
 from .search_schema import normalize_search_listing, validate_search_listing
 from .llm_enrichment import (
@@ -484,6 +484,9 @@ class JobRunner:
         self.capture = capture or PlaywrightCapture()
         self.rate_limiter = rate_limiter or RateLimiter(0)
         self.allowed_domains = [d.lower() for d in (allowed_domains or [])]
+        self.access_policy = CaptureAccessPolicy(self.allowed_domains)
+        self.capture_store = CapturePayloadStore(storage)
+        self.metric_recorder = JobMetricRecorder(storage, LOGGER)
         self.capture_ttl_seconds = max(0, int(capture_ttl_seconds))
         self.include_reviews_default = bool(include_reviews_default)
         review_mode_default = (review_mode_default or "").strip().lower() or "full"
@@ -500,10 +503,7 @@ class JobRunner:
         status: str,
         metrics: Optional[Dict[str, Any]] = None,
     ) -> None:
-        try:
-            self.storage.add_job_metric(job_id, job_type, status, metrics or {})
-        except Exception:
-            LOGGER.exception("Failed to persist job metrics for %s (%s)", job_id, job_type)
+        self.metric_recorder.record(job_id, job_type, status, metrics or {})
 
     def process_job(self, job: Dict[str, Any]) -> bool:
         job_type = job.get("job_type")
@@ -545,42 +545,7 @@ class JobRunner:
             return True
 
     def _store_capture(self, key: str, capture: Dict[str, Any]) -> List[str]:
-        raw_ids: List[str] = []
-
-        html = capture.get("html")
-        if html:
-            path = write_raw_payload("page_html", key, {"url": capture.get("url"), "html": html})
-            raw_id = self.storage.add_raw_payload("page_html", path, {"url": capture.get("url")})
-            raw_ids.append(raw_id)
-
-        for response in capture.get("responses", []):
-            payload = {
-                "url": response.get("url"),
-                "status": response.get("status"),
-                "content_type": response.get("content_type"),
-                "data": response.get("data"),
-            }
-            path = write_raw_payload("network_json", key, payload)
-            raw_id = self.storage.add_raw_payload(
-                "network_json",
-                path,
-                {"url": response.get("url"), "status": response.get("status")},
-            )
-            raw_ids.append(raw_id)
-
-        errors = capture.get("errors") or []
-        if errors:
-            path = write_raw_payload("capture_errors", key, {"errors": errors})
-            raw_id = self.storage.add_raw_payload("capture_errors", path, {})
-            raw_ids.append(raw_id)
-
-        debug = capture.get("debug")
-        if debug:
-            path = write_raw_payload("capture_debug", key, debug)
-            raw_id = self.storage.add_raw_payload("capture_debug", path, {})
-            raw_ids.append(raw_id)
-
-        return raw_ids
+        return self.capture_store.store(key, capture)
 
     def _log_capture_metrics(self, label: str, capture: Dict[str, Any]) -> None:
         if not self.capture_log_metrics:
@@ -1093,14 +1058,7 @@ class JobRunner:
         return metrics
 
     def _is_allowed_url(self, url: str) -> bool:
-        if not self.allowed_domains:
-            return True
-        try:
-            host = urlparse(url).hostname or ""
-        except Exception:
-            return False
-        host = host.lower()
-        return any(host == domain or host.endswith(f".{domain}") for domain in self.allowed_domains)
+        return self.access_policy.is_allowed_url(url)
 
     def _check_cached_listing(
         self,

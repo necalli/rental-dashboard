@@ -32,6 +32,8 @@ def main() -> None:
     poll_interval = float(os.getenv("RENTAL_WORKER_POLL_INTERVAL", "2"))
     worker_id = str(os.getenv("RENTAL_WORKER_ID") or "").strip() or _default_worker_id()
     heartbeat_seconds = max(0, int(os.getenv("RENTAL_WORKER_HEARTBEAT_SECONDS", "30")))
+    stale_job_seconds = max(0, int(os.getenv("RENTAL_WORKER_STALE_JOB_SECONDS", "900")))
+    max_job_attempts = max(1, int(os.getenv("RENTAL_WORKER_MAX_JOB_ATTEMPTS", "3")))
     worker_job_types = _parse_csv(os.getenv("RENTAL_WORKER_JOB_TYPES", ""))
     headless = _parse_bool(os.getenv("RENTAL_PLAYWRIGHT_HEADLESS", "true"), True)
     timeout_ms = int(os.getenv("RENTAL_PLAYWRIGHT_TIMEOUT_MS", "30000"))
@@ -134,7 +136,15 @@ def main() -> None:
     last_heartbeat = time.monotonic()
 
     while True:
-        job = storage.claim_next_job(job_types=worker_job_types or None)
+        if stale_job_seconds > 0:
+            recovered = storage.recover_stale_jobs(
+                stale_after_seconds=stale_job_seconds,
+                max_attempts=max_job_attempts,
+            )
+            if recovered:
+                logging.warning("Worker id=%s recovered %s stale running job(s)", worker_id, recovered)
+
+        job = storage.claim_next_job(job_types=worker_job_types or None, worker_id=worker_id)
         if job:
             processed_count += 1
             logging.info(
@@ -143,6 +153,7 @@ def main() -> None:
                 job.get("job_id"),
                 job.get("job_type"),
             )
+            storage.heartbeat_job(str(job.get("job_id") or ""), worker_id=worker_id)
             success = runner.process_job(job)
             if success:
                 success_count += 1

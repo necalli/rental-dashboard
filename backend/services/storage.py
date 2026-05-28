@@ -8,6 +8,9 @@ from typing import Any, Dict, List, Optional
 from .config import DATA_DIR, DB_PATH
 
 
+CURRENT_SCHEMA_VERSION = 2
+
+
 class Storage:
     def __init__(self, db_path: Optional[str] = None) -> None:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -16,6 +19,8 @@ class Storage:
 
     def _ensure_tables(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -25,6 +30,10 @@ class Storage:
                     status TEXT,
                     result_ref TEXT,
                     error TEXT,
+                    claimed_by TEXT,
+                    claimed_at INTEGER,
+                    heartbeat_at INTEGER,
+                    attempts INTEGER DEFAULT 0,
                     created_at INTEGER,
                     updated_at INTEGER
                 )
@@ -189,10 +198,77 @@ class Storage:
                 ON agent_sessions(updated_at)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT,
+                    applied_at INTEGER
+                )
+                """
+            )
             conn.commit()
+            self._apply_migrations(conn)
+
+    def _apply_migrations(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+        current = int(row[0] or 0) if row else 0
+        now = self._now()
+        if current < 1:
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                (1, "baseline_schema", now),
+            )
+        if current < CURRENT_SCHEMA_VERSION:
+            self._ensure_column(conn, "jobs", "claimed_by", "TEXT")
+            self._ensure_column(conn, "jobs", "claimed_at", "INTEGER")
+            self._ensure_column(conn, "jobs", "heartbeat_at", "INTEGER")
+            self._ensure_column(conn, "jobs", "attempts", "INTEGER DEFAULT 0")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_running_heartbeat ON jobs(status, heartbeat_at, updated_at)"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                (CURRENT_SCHEMA_VERSION, "job_leases", now),
+            )
+        conn.commit()
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {str(row[1]) for row in rows}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _now(self) -> int:
         return int(time.time())
+
+    def _job_from_row(
+        self,
+        row: Any,
+        *,
+        status: Optional[str] = None,
+        updated_at: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "job_id": row[0],
+            "job_type": row[1],
+            "payload": json.loads(row[2] or "{}"),
+            "status": status if status is not None else row[3],
+            "result_ref": row[4],
+            "error": row[5],
+            "claimed_by": row[6],
+            "claimed_at": row[7],
+            "heartbeat_at": row[8],
+            "attempts": int(row[9] or 0),
+            "created_at": row[10],
+            "updated_at": updated_at if updated_at is not None else row[11],
+        }
 
     def create_job(self, job_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         job_id = str(uuid.uuid4())
@@ -219,6 +295,10 @@ class Storage:
             "job_id": job_id,
             "job_type": job_type,
             "status": "queued",
+            "claimed_by": None,
+            "claimed_at": None,
+            "heartbeat_at": None,
+            "attempts": 0,
             "created_at": now,
             "updated_at": now,
             "payload": payload or {},
@@ -233,14 +313,21 @@ class Storage:
         error: Optional[str] = None,
     ) -> None:
         now = self._now()
+        clear_claim = status in {"complete", "completed", "failed", "cancelled", "canceled"}
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, result_ref = ?, error = ?, updated_at = ?
+                SET status = ?,
+                    result_ref = ?,
+                    error = ?,
+                    claimed_by = CASE WHEN ? THEN NULL ELSE claimed_by END,
+                    claimed_at = CASE WHEN ? THEN NULL ELSE claimed_at END,
+                    heartbeat_at = CASE WHEN ? THEN NULL ELSE heartbeat_at END,
+                    updated_at = ?
                 WHERE job_id = ?
                 """,
-                (status, result_ref, error, now, job_id),
+                (status, result_ref, error, clear_claim, clear_claim, clear_claim, now, job_id),
             )
             conn.commit()
 
@@ -249,48 +336,38 @@ class Storage:
             return None
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, job_type, payload_json, status, result_ref, error, created_at, updated_at FROM jobs WHERE job_id = ?",
+                """
+                SELECT job_id, job_type, payload_json, status, result_ref, error,
+                       claimed_by, claimed_at, heartbeat_at, attempts, created_at, updated_at
+                FROM jobs WHERE job_id = ?
+                """,
                 (job_id,),
             ).fetchone()
         if not row:
             return None
-        return {
-            "job_id": row[0],
-            "job_type": row[1],
-            "payload": json.loads(row[2] or "{}"),
-            "status": row[3],
-            "result_ref": row[4],
-            "error": row[5],
-            "created_at": row[6],
-            "updated_at": row[7],
-        }
+        return self._job_from_row(row)
 
     def list_jobs(self, limit: int = 50) -> List[Dict[str, Any]]:
         limit = max(1, int(limit or 50))
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, job_type, payload_json, status, result_ref, error, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT ?",
+                """
+                SELECT job_id, job_type, payload_json, status, result_ref, error,
+                       claimed_by, claimed_at, heartbeat_at, attempts, created_at, updated_at
+                FROM jobs ORDER BY created_at DESC LIMIT ?
+                """,
                 (limit,),
             ).fetchall()
-        jobs: List[Dict[str, Any]] = []
-        for row in rows:
-            jobs.append(
-                {
-                    "job_id": row[0],
-                    "job_type": row[1],
-                    "payload": json.loads(row[2] or "{}"),
-                    "status": row[3],
-                    "result_ref": row[4],
-                    "error": row[5],
-                    "created_at": row[6],
-                    "updated_at": row[7],
-                }
-            )
-        return jobs
+        return [self._job_from_row(row) for row in rows]
 
-    def claim_next_job(self, job_types: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    def claim_next_job(
+        self,
+        job_types: Optional[List[str]] = None,
+        worker_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         query = (
-            "SELECT job_id, job_type, payload_json, status, result_ref, error, created_at, updated_at "
+            "SELECT job_id, job_type, payload_json, status, result_ref, error, "
+            "claimed_by, claimed_at, heartbeat_at, attempts, created_at, updated_at "
             "FROM jobs WHERE status = ?"
         )
         params: List[Any] = ["queued"]
@@ -308,23 +385,71 @@ class Storage:
             job_id = row[0]
             now = self._now()
             result = conn.execute(
-                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ? AND status = ?",
-                ("running", now, job_id, "queued"),
+                """
+                UPDATE jobs
+                SET status = ?,
+                    claimed_by = ?,
+                    claimed_at = ?,
+                    heartbeat_at = ?,
+                    attempts = COALESCE(attempts, 0) + 1,
+                    updated_at = ?
+                WHERE job_id = ? AND status = ?
+                """,
+                ("running", worker_id, now, now, now, job_id, "queued"),
             )
             if int(result.rowcount or 0) != 1:
                 conn.rollback()
                 return None
             conn.commit()
-        return {
-            "job_id": row[0],
-            "job_type": row[1],
-            "payload": json.loads(row[2] or "{}"),
-            "status": "running",
-            "result_ref": row[4],
-            "error": row[5],
-            "created_at": row[6],
-            "updated_at": now,
-        }
+        claimed = list(row)
+        claimed[6] = worker_id
+        claimed[7] = now
+        claimed[8] = now
+        claimed[9] = int(claimed[9] or 0) + 1
+        return self._job_from_row(claimed, status="running", updated_at=now)
+
+    def heartbeat_job(self, job_id: str, worker_id: Optional[str] = None) -> bool:
+        if not job_id:
+            return False
+        now = self._now()
+        where = "job_id = ? AND status = ?"
+        params: List[Any] = [now, now, job_id, "running"]
+        if worker_id:
+            where += " AND claimed_by = ?"
+            params.append(worker_id)
+        with sqlite3.connect(self.db_path) as conn:
+            result = conn.execute(
+                f"UPDATE jobs SET heartbeat_at = ?, updated_at = ? WHERE {where}",
+                params,
+            )
+            conn.commit()
+        return int(result.rowcount or 0) > 0
+
+    def recover_stale_jobs(self, stale_after_seconds: int = 900, max_attempts: int = 3) -> int:
+        stale_after_seconds = max(1, int(stale_after_seconds or 900))
+        max_attempts = max(1, int(max_attempts or 3))
+        cutoff = self._now() - stale_after_seconds
+        now = self._now()
+        with sqlite3.connect(self.db_path) as conn:
+            result = conn.execute(
+                """
+                UPDATE jobs
+                SET status = CASE WHEN COALESCE(attempts, 0) >= ? THEN 'failed' ELSE 'queued' END,
+                    error = CASE
+                        WHEN COALESCE(attempts, 0) >= ? THEN COALESCE(error, 'Job stale after worker heartbeat timeout')
+                        ELSE error
+                    END,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    heartbeat_at = NULL,
+                    updated_at = ?
+                WHERE status = 'running'
+                  AND COALESCE(heartbeat_at, updated_at, created_at) < ?
+                """,
+                (max_attempts, max_attempts, now, cutoff),
+            )
+            conn.commit()
+        return int(result.rowcount or 0)
 
     def get_job_status_counts(self) -> Dict[str, int]:
         counts: Dict[str, int] = {
@@ -425,14 +550,14 @@ class Storage:
                 review_id = str(review.get("id") or review.get("review_id") or uuid.uuid4())
                 payload_json = json.dumps(review)
                 raw_ref = review.get("raw_payload_ref")
-                conn.execute(
+                result = conn.execute(
                     """
                     INSERT OR IGNORE INTO reviews (review_id, listing_id, payload_json, raw_ref, created_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     (review_id, listing_id, payload_json, raw_ref, now),
                 )
-                count += 1
+                count += int(result.rowcount or 0)
             conn.commit()
         return count
 
@@ -497,14 +622,14 @@ class Storage:
                 if not listing_id:
                     continue
                 payload_json = json.dumps(listing)
-                conn.execute(
+                result = conn.execute(
                     """
                     INSERT OR IGNORE INTO search_listings (run_id, listing_id, payload_json, created_at)
                     VALUES (?, ?, ?, ?)
                     """,
                     (run_id, listing_id, payload_json, now),
                 )
-                count += 1
+                count += int(result.rowcount or 0)
             conn.commit()
         return count
 

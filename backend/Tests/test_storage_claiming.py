@@ -1,5 +1,6 @@
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -70,6 +71,62 @@ class StorageClaimingTests(unittest.TestCase):
         self.assertEqual(counts.get("complete"), 1)
         self.assertEqual(counts.get("failed"), 1)
         self.assertEqual(counts.get("total"), 3)
+
+    def test_claim_tracks_lease_and_recovers_stale_job(self) -> None:
+        tmpdir = self._tmpdir()
+        db_path = os.path.join(tmpdir, "jobs.db")
+        storage = Storage(db_path=db_path)
+        created = storage.create_job("listing_ingest", {"url": "https://example.com/rooms/1"})
+
+        claimed = storage.claim_next_job(worker_id="worker-a")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.get("job_id"), created.get("job_id"))
+        self.assertEqual(claimed.get("claimed_by"), "worker-a")
+        self.assertEqual(claimed.get("attempts"), 1)
+
+        recovered = storage.recover_stale_jobs(stale_after_seconds=1, max_attempts=3)
+        self.assertEqual(recovered, 0)
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE jobs SET heartbeat_at = ?, updated_at = ? WHERE job_id = ?",
+                (1, 1, created["job_id"]),
+            )
+            conn.commit()
+
+        recovered = storage.recover_stale_jobs(stale_after_seconds=1, max_attempts=3)
+        self.assertEqual(recovered, 1)
+        job = storage.get_job(created["job_id"])
+        self.assertEqual(job.get("status"), "queued")
+        self.assertIsNone(job.get("claimed_by"))
+
+    def test_insert_counts_ignore_duplicates(self) -> None:
+        tmpdir = self._tmpdir()
+        db_path = os.path.join(tmpdir, "jobs.db")
+        storage = Storage(db_path=db_path)
+
+        first_reviews = storage.add_reviews(
+            "listing-1",
+            [
+                {"id": "review-1", "text": "one"},
+                {"id": "review-1", "text": "duplicate"},
+            ],
+        )
+        second_reviews = storage.add_reviews("listing-1", [{"id": "review-1", "text": "again"}])
+        self.assertEqual(first_reviews, 1)
+        self.assertEqual(second_reviews, 0)
+
+        run_id = storage.add_search_run({}, {}, [])
+        first_listings = storage.add_search_listings(
+            run_id,
+            [
+                {"id": "listing-1", "title": "one"},
+                {"id": "listing-1", "title": "duplicate"},
+            ],
+        )
+        second_listings = storage.add_search_listings(run_id, [{"id": "listing-1", "title": "again"}])
+        self.assertEqual(first_listings, 1)
+        self.assertEqual(second_listings, 0)
 
 
 if __name__ == "__main__":
