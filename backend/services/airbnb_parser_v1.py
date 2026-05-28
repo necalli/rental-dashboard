@@ -18,13 +18,23 @@ def parse_capture(capture: Dict[str, Any], listing_id: str, listing_url: str) ->
 
     responses = capture.get("responses") or []
     html = capture.get("html")
+    deferred_state = None
     stay_node = None
     section_ids: List[str] = []
     if html:
-        stay_node = _extract_stay_product_detail(html)
+        deferred_state = _extract_deferred_state(html)
+        stay_node = _find_stay_product_detail(deferred_state)
         if stay_node:
             section_ids = _extract_section_ids(stay_node)
-        listing.update(parse_listing_from_html(html, listing_id, listing_url, _preparsed_node=stay_node))
+        listing.update(
+            parse_listing_from_html(
+                html,
+                listing_id,
+                listing_url,
+                _preparsed_node=stay_node,
+                _deferred_state=deferred_state,
+            )
+        )
 
     review_telemetry: Dict[str, Any] = {}
     reviews = parse_reviews_from_responses(responses, listing_id, listing_url, telemetry=review_telemetry)
@@ -50,6 +60,7 @@ def parse_capture(capture: Dict[str, Any], listing_id: str, listing_url: str) ->
         and int(review_telemetry.get("primary_path_hits") or 0) == 0
     ):
         warnings.append("reviews_primary_path_missing_used_fallback")
+    amenities_from_fallback = bool(listing.pop("_amenities_from_fallback", False))
 
     listing["parser_meta"] = build_parser_meta(
         parser_version=LISTING_PARSER_VERSION,
@@ -58,6 +69,7 @@ def parse_capture(capture: Dict[str, Any], listing_id: str, listing_url: str) ->
         fallbacks={
             "pricing_from_responses": bool(pricing_from_responses),
             "review_fallback_scan_used": bool(review_telemetry.get("fallback_path_hits")),
+            "amenities_from_deferred_state_scan": amenities_from_fallback,
         },
         signals={
             "section_ids": section_ids[:12],
@@ -65,6 +77,7 @@ def parse_capture(capture: Dict[str, Any], listing_id: str, listing_url: str) ->
             "parsed_reviews_count": len(reviews),
             "primary_review_path_hits": int(review_telemetry.get("primary_path_hits") or 0),
             "fallback_review_path_hits": int(review_telemetry.get("fallback_path_hits") or 0),
+            "parsed_amenity_group_count": len(listing.get("amenities") or []),
         },
     )
 
@@ -76,8 +89,10 @@ def parse_listing_from_html(
     listing_id: str,
     listing_url: str,
     _preparsed_node: Optional[Dict[str, Any]] = None,
+    _deferred_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    node = _preparsed_node if isinstance(_preparsed_node, dict) else _extract_stay_product_detail(html)
+    deferred_state = _deferred_state if isinstance(_deferred_state, dict) else _extract_deferred_state(html)
+    node = _preparsed_node if isinstance(_preparsed_node, dict) else _find_stay_product_detail(deferred_state)
     if not node:
         return _empty_listing(listing_id, listing_url)
 
@@ -100,6 +115,10 @@ def parse_listing_from_html(
 
     description = _extract_description(by_id.get("DESCRIPTION_MODAL", {}))
     amenities = _extract_amenities(by_id.get("AMENITIES_DEFAULT", {}))
+    amenities_from_fallback = False
+    if not amenities:
+        amenities = _extract_amenities_from_deferred_state(deferred_state)
+        amenities_from_fallback = bool(amenities)
     sleeping = _extract_sleeping_arrangements(by_id.get("SLEEPING_ARRANGEMENT_WITH_IMAGES", {}))
 
     policies = by_id.get("POLICIES_DEFAULT", {}) or {}
@@ -145,7 +164,7 @@ def parse_listing_from_html(
         pricing["nights"] = availability.get("nights")
     pricing = _apply_nights_to_pricing(pricing)
 
-    return {
+    listing = {
         "id": listing_id,
         "source": "airbnb",
         "url": listing_url,
@@ -169,6 +188,9 @@ def parse_listing_from_html(
         "availability": availability,
         "captured_at": _now_iso(),
     }
+    if amenities_from_fallback:
+        listing["_amenities_from_fallback"] = True
+    return listing
 
 
 def parse_reviews_from_responses(
@@ -265,15 +287,24 @@ def _find_review_objects(node: Any) -> List[Dict[str, Any]]:
     return results
 
 
-def _extract_stay_product_detail(html: str) -> Optional[Dict[str, Any]]:
+def _extract_deferred_state(html: str) -> Optional[Dict[str, Any]]:
     match = SCRIPT_PATTERN.search(html or "")
     if not match:
         return None
     raw = match.group(1).strip()
     raw = raw.replace("&quot;", "\"")
     try:
-        data = json.loads(raw)
+        return json.loads(raw)
     except json.JSONDecodeError:
+        return None
+
+
+def _extract_stay_product_detail(html: str) -> Optional[Dict[str, Any]]:
+    return _find_stay_product_detail(_extract_deferred_state(html))
+
+
+def _find_stay_product_detail(data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(data, dict):
         return None
     for entry in data.get("niobeClientData", []):
         if not isinstance(entry, list) or len(entry) < 2:
@@ -349,11 +380,57 @@ def _extract_description(section: Dict[str, Any]) -> str:
 
 
 def _extract_amenities(section: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(section, dict):
+        return []
     groups = section.get("seeAllAmenitiesGroups") or section.get("previewAmenitiesGroups") or []
+    return _normalize_amenity_groups(groups)
+
+
+def _extract_amenities_from_deferred_state(data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(data, dict):
+        return []
+    for candidate in _find_amenity_containers(data):
+        groups = candidate.get("seeAllAmenitiesGroups") or candidate.get("previewAmenitiesGroups") or []
+        amenities = _normalize_amenity_groups(groups)
+        if amenities:
+            return amenities
+    return []
+
+
+def _find_amenity_containers(node: Any, depth: int = 14) -> List[Dict[str, Any]]:
+    if depth <= 0:
+        return []
+    containers: List[Dict[str, Any]] = []
+    if isinstance(node, dict):
+        has_groups = isinstance(node.get("seeAllAmenitiesGroups"), list) or isinstance(
+            node.get("previewAmenitiesGroups"),
+            list,
+        )
+        if has_groups:
+            containers.append(node)
+        for key, value in node.items():
+            if key in {"loggingEventData", "loggingContext"}:
+                continue
+            containers.extend(_find_amenity_containers(value, depth - 1))
+    elif isinstance(node, list):
+        for item in node:
+            containers.extend(_find_amenity_containers(item, depth - 1))
+    return containers
+
+
+def _normalize_amenity_groups(groups: Any) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+    if not isinstance(groups, list):
+        return results
     for group in groups:
+        if not isinstance(group, dict):
+            continue
         title = group.get("title")
-        amenities = [item.get("title") for item in (group.get("amenities") or []) if item.get("title")]
+        amenities = [
+            item.get("title")
+            for item in (group.get("amenities") or [])
+            if isinstance(item, dict) and item.get("title") and item.get("available", True) is not False
+        ]
         if title or amenities:
             results.append({"group": title, "items": amenities})
     return results

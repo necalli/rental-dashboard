@@ -14,6 +14,33 @@ from services.airbnb_search_parser_v1 import (
 )
 
 
+def _listing_html(stay_payload: dict, extra_payload: dict = None) -> str:
+    payload = {
+        "niobeClientData": [
+            [
+                "stay",
+                {
+                    "data": {
+                        "presentation": {
+                            "stayProductDetailPage": stay_payload,
+                        }
+                    }
+                },
+            ]
+        ]
+    }
+    if extra_payload:
+        payload["niobeClientData"].append(["extra", extra_payload])
+    raw = json_dumps(payload)
+    return f'<html><script id="data-deferred-state-0" type="application/json">{raw}</script></html>'
+
+
+def json_dumps(value):
+    import json
+
+    return json.dumps(value, ensure_ascii=False)
+
+
 class ListingParserDriftTests(unittest.TestCase):
     def test_listing_parser_meta_flags_missing_review_extraction(self) -> None:
         capture = {
@@ -37,6 +64,83 @@ class ListingParserDriftTests(unittest.TestCase):
         self.assertIn("review_responses_without_parsed_reviews", warnings)
         signature = (parser_meta.get("schema_signature") or {}).get("hash")
         self.assertTrue(isinstance(signature, str) and len(signature) >= 8)
+
+    def test_listing_parser_extracts_amenities_from_deferred_fallback(self) -> None:
+        stay_payload = {
+            "sections": {
+                "metadata": {
+                    "sharingConfig": {
+                        "title": "Cottage in Roxbury · 4 bedrooms",
+                        "propertyType": "Entire cottage",
+                        "location": "Roxbury",
+                    }
+                },
+                "sections": [
+                    {
+                        "sectionId": "AMENITIES_DEFAULT",
+                        "section": {"__typename": "AmenitiesSection"},
+                    },
+                    {
+                        "sectionId": "TITLE_DEFAULT",
+                        "section": {"title": "Cottage in Roxbury"},
+                    },
+                ],
+            }
+        }
+        extra_payload = {
+            "data": {
+                "node": {
+                    "pdpPresentation": {
+                        "amenities": {
+                            "previewAmenitiesGroups": [
+                                {
+                                    "title": None,
+                                    "amenities": [
+                                        {"title": "Kitchen", "available": True},
+                                        {"title": "Wifi", "available": True},
+                                    ],
+                                }
+                            ],
+                            "seeAllAmenitiesGroups": [
+                                {
+                                    "title": "Bathroom",
+                                    "amenities": [
+                                        {"title": "Bath", "available": True},
+                                        {"title": "Hairdryer", "available": True},
+                                        {"title": "Unavailable item", "available": False},
+                                    ],
+                                },
+                                {
+                                    "title": "Internet and office",
+                                    "amenities": [{"title": "Wifi", "available": True}],
+                                },
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        capture = {
+            "url": "https://www.airbnb.com/rooms/123",
+            "html": _listing_html(stay_payload, extra_payload),
+            "responses": [],
+        }
+
+        listing, reviews = parse_capture(capture, "123", capture["url"])
+
+        self.assertEqual(reviews, [])
+        self.assertEqual(
+            listing.get("amenities"),
+            [
+                {"group": "Bathroom", "items": ["Bath", "Hairdryer"]},
+                {"group": "Internet and office", "items": ["Wifi"]},
+            ],
+        )
+        parser_meta = listing.get("parser_meta") or {}
+        self.assertTrue(
+            (parser_meta.get("fallbacks") or {}).get("amenities_from_deferred_state_scan")
+        )
+        self.assertEqual((parser_meta.get("signals") or {}).get("parsed_amenity_group_count"), 2)
 
 
 class SearchParserDriftTests(unittest.TestCase):
