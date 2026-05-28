@@ -314,6 +314,49 @@ def _extract_listing_id(url: str) -> str:
     return path.replace("/", "_")
 
 
+def _url_host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _url_path(url: str) -> str:
+    try:
+        return urlparse(url).path.strip("/").lower()
+    except Exception:
+        return ""
+
+
+def _is_airbnb_url(url: str) -> bool:
+    host = _url_host(url)
+    return host == "airbnb.com" or host.endswith(".airbnb.com")
+
+
+def _is_airbnb_search_url(url: str) -> bool:
+    path = _url_path(url)
+    return _is_airbnb_url(url) and (path == "s" or path.startswith("s/"))
+
+
+def _has_airbnb_room_id(url: str) -> bool:
+    return bool(LISTING_ID_PATTERN.search(url or ""))
+
+
+def _has_listing_detail_signal(listing: Dict[str, Any]) -> bool:
+    location = listing.get("location") if isinstance(listing.get("location"), dict) else {}
+    photos = listing.get("photos") if isinstance(listing.get("photos"), list) else []
+    return any(
+        [
+            listing.get("title"),
+            listing.get("description"),
+            listing.get("description_snippet"),
+            listing.get("property_type"),
+            location.get("name"),
+            photos,
+        ]
+    )
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -629,6 +672,12 @@ class JobRunner:
             raise ValueError("url is required")
         if not self._is_allowed_url(url):
             raise ValueError("url domain is not allowed")
+        if _is_airbnb_search_url(url):
+            raise ValueError(
+                "listing_ingest requires an Airbnb listing URL. Use New search for Airbnb /s/... search URLs."
+            )
+        if _is_airbnb_url(url) and not _has_airbnb_room_id(url):
+            raise ValueError("listing_ingest requires an Airbnb /rooms/{id} listing URL.")
 
         listing_id = _extract_listing_id(url) or job_id
         include_reviews = payload.get("include_reviews")
@@ -865,6 +914,12 @@ class JobRunner:
         listing = normalize_listing(listing)
         listing = _apply_fx_pricing(listing)
         listing["validation"] = validate_listing(listing)
+        job_metrics["listing_detail_signal"] = bool(_has_listing_detail_signal(listing))
+        if not bool(review_only) and not _has_listing_detail_signal(listing):
+            raise ValueError(
+                "Listing capture completed but no listing details were parsed. "
+                "Check that the URL is a listing detail page and retry with force if needed."
+            )
         self.storage.upsert_listing(listing)
         inserted = 0
         if reviews:

@@ -1,5 +1,8 @@
 import asyncio
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 try:
     from services.job_runner import (
+        JobRunner,
         _capture_stage_from_stages as capture_stage_from_stages,
         _derive_capture_stages as derive_capture_stages,
         _expected_lite_review_target as expected_lite_review_target,
@@ -23,6 +27,12 @@ except Exception:
     expected_lite_review_target = None
     extract_job_runner_overrides = None
     should_retry_lite_capture_once = None
+    JobRunner = None
+
+try:
+    from services.storage import Storage
+except Exception:
+    Storage = None
 
 try:
     from services.playwright_capture import PlaywrightCapture
@@ -54,6 +64,17 @@ class ApiCaptureOverrideTests(unittest.TestCase):
         _, payload = mocked_create_job.call_args.args
         self.assertEqual(payload.get("capture_timeout_ms"), 600000)
         self.assertEqual(payload.get("review_pagination_passes"), 1)
+
+    def test_listing_ingest_rejects_airbnb_search_urls(self) -> None:
+        client = app_module.app.test_client()
+        with patch.object(app_module.storage, "create_job") as mocked_create_job:
+            response = client.post(
+                "/api/v1/listings/ingest",
+                json={"url": "https://www.airbnb.com/s/Phoenicia--NY/homes?adults=2"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(mocked_create_job.call_count, 0)
+        self.assertIn("/s/", response.get_json().get("error", ""))
 
     def test_search_accepts_timeout_but_not_review_pagination_override(self) -> None:
         client = app_module.app.test_client()
@@ -199,6 +220,58 @@ class JobRunnerCaptureOverrideTests(unittest.TestCase):
             default_limit=24,
         )
         self.assertFalse(low_total_fully_captured_no_retry)
+
+    @unittest.skipIf(JobRunner is None or Storage is None, "Job runner dependencies are unavailable")
+    def test_listing_ingest_fails_for_empty_listing_parse(self) -> None:
+        class EmptyCapture:
+            def capture_listing(self, url, **kwargs):
+                return {"url": url, "responses": [], "errors": [], "duration_ms": 1}
+
+        tmpdir = tempfile.mkdtemp(prefix="job-runner-empty-")
+        self.addCleanup(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
+        storage = Storage(db_path=os.path.join(tmpdir, "jobs.db"))
+        job = storage.create_job(
+            "listing_ingest",
+            {"url": "https://www.airbnb.com/rooms/123", "review_mode": "none"},
+        )
+        claimed = storage.claim_next_job(worker_id="test-worker")
+        runner = JobRunner(
+            storage,
+            capture=EmptyCapture(),
+            allowed_domains=["airbnb.com"],
+            include_reviews_default=False,
+        )
+
+        ok = runner.process_job(claimed)
+
+        self.assertFalse(ok)
+        stored_job = storage.get_job(job["job_id"])
+        self.assertEqual(stored_job.get("status"), "failed")
+        self.assertIn("no listing details", stored_job.get("error", ""))
+        self.assertEqual(storage.list_listings(limit=10), [])
+
+    @unittest.skipIf(JobRunner is None or Storage is None, "Job runner dependencies are unavailable")
+    def test_listing_ingest_fails_for_airbnb_search_url(self) -> None:
+        class UnusedCapture:
+            def capture_listing(self, url, **kwargs):  # pragma: no cover
+                raise AssertionError("search URLs should fail before capture")
+
+        tmpdir = tempfile.mkdtemp(prefix="job-runner-search-url-")
+        self.addCleanup(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
+        storage = Storage(db_path=os.path.join(tmpdir, "jobs.db"))
+        job = storage.create_job(
+            "listing_ingest",
+            {"url": "https://www.airbnb.com/s/Phoenicia--NY/homes?adults=2"},
+        )
+        claimed = storage.claim_next_job(worker_id="test-worker")
+        runner = JobRunner(storage, capture=UnusedCapture(), allowed_domains=["airbnb.com"])
+
+        ok = runner.process_job(claimed)
+
+        self.assertFalse(ok)
+        stored_job = storage.get_job(job["job_id"])
+        self.assertEqual(stored_job.get("status"), "failed")
+        self.assertIn("listing URL", stored_job.get("error", ""))
 
 
 class PlaywrightCaptureOverrideTests(unittest.TestCase):

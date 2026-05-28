@@ -2,6 +2,7 @@
 import math
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 from werkzeug.local import LocalProxy
@@ -24,6 +25,35 @@ personality_rag = LocalProxy(lambda: current_app.config["personality_rag"])
 
 def _payload() -> Dict[str, Any]:
     return request.get_json(silent=True) or {}
+
+
+def _url_host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _url_path(url: str) -> str:
+    try:
+        return urlparse(url).path.strip("/").lower()
+    except Exception:
+        return ""
+
+
+def _is_airbnb_url(url: str) -> bool:
+    host = _url_host(url)
+    return host == "airbnb.com" or host.endswith(".airbnb.com")
+
+
+def _is_airbnb_search_url(url: str) -> bool:
+    path = _url_path(url)
+    return _is_airbnb_url(url) and (path == "s" or path.startswith("s/"))
+
+
+def _has_airbnb_room_id(url: str) -> bool:
+    return "/rooms/" in f"/{_url_path(url)}"
+
 
 def _to_float(value: Any) -> Optional[float]:
     try:
@@ -304,6 +334,17 @@ def ingest_listing():
     listing_url = (payload.get("url") or "").strip()
     if not listing_url:
         return jsonify({"error": "url is required"}), 400
+    if _is_airbnb_search_url(listing_url):
+        return (
+            jsonify(
+                {
+                    "error": "Ingest URLs expects Airbnb listing detail URLs. Use New search for Airbnb /s/... search URLs."
+                }
+            ),
+            400,
+        )
+    if _is_airbnb_url(listing_url) and not _has_airbnb_room_id(listing_url):
+        return jsonify({"error": "Airbnb listing ingest requires a /rooms/{id} URL."}), 400
 
     include_reviews = payload.get("include_reviews")
     review_mode = payload.get("review_mode")
