@@ -1374,6 +1374,26 @@ export default function App() {
                   }
                 />
               </div>
+              <div className="grid gap-2">
+                <Label>Lite capture strategy</Label>
+                <select
+                  className="h-10 rounded-md border border-border bg-background px-3"
+                  value={settings.liteCaptureStrategy || 'adaptive'}
+                  disabled={settings.reviewMode !== 'lite'}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      liteCaptureStrategy: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="adaptive">Adaptive Lite</option>
+                  <option value="normal">Normal Lite</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Adaptive Lite adds a small bounded recovery window when the first review sample is below target.
+                </p>
+              </div>
               <div className="flex items-center justify-between">
                 <Label>Show compare disclaimer for lite reviews</Label>
                 <Checkbox
@@ -2645,3 +2665,4 @@ export default function App() {
     </div>
   )
 }
+

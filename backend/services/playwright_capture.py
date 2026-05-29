@@ -39,6 +39,9 @@ class PlaywrightCapture:
         review_wait_ms: int = 5000,
         review_pagination_passes: int = 6,
         review_page_wait_ms: int = 1500,
+        lite_capture_strategy: str = "adaptive",
+        lite_adaptive_max_pulses: int = 4,
+        lite_review_target: int = 24,
         review_only: bool = False,
         debug: bool = False,
         debug_screenshots: bool = False,
@@ -68,6 +71,9 @@ class PlaywrightCapture:
         self.review_wait_ms = max(0, int(review_wait_ms))
         self.review_pagination_passes = max(1, int(review_pagination_passes))
         self.review_page_wait_ms = max(250, int(review_page_wait_ms))
+        self.lite_capture_strategy = self._normalize_lite_capture_strategy(lite_capture_strategy)
+        self.lite_adaptive_max_pulses = max(1, min(12, int(lite_adaptive_max_pulses or 4)))
+        self.lite_review_target = max(1, min(50, int(lite_review_target or 24)))
         self.review_only = bool(review_only)
         self.debug = bool(debug)
         self.debug_screenshots = bool(debug_screenshots)
@@ -131,6 +137,10 @@ class PlaywrightCapture:
             return bool(value)
         return None
 
+    def _normalize_lite_capture_strategy(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in {"adaptive", "normal"} else "adaptive"
+
     def _resolve_capture_overrides(
         self,
         capture_overrides: Optional[Dict[str, Any]],
@@ -142,6 +152,9 @@ class PlaywrightCapture:
             "review_wait_ms": int(self.review_wait_ms),
             "review_pagination_passes": int(self.review_pagination_passes),
             "review_page_wait_ms": int(self.review_page_wait_ms),
+            "lite_capture_strategy": self.lite_capture_strategy,
+            "lite_adaptive_max_pulses": int(self.lite_adaptive_max_pulses),
+            "lite_review_target": int(self.lite_review_target),
             "adaptive_listing_navigation": bool(self.adaptive_listing_navigation),
             "listing_response_target": int(self.listing_response_target),
             "listing_navigation_wait_cap_ms": int(self.listing_navigation_wait_cap_ms),
@@ -182,6 +195,26 @@ class PlaywrightCapture:
             )
             if review_page_wait_ms is not None:
                 resolved["review_page_wait_ms"] = review_page_wait_ms
+
+            strategy = capture_overrides.get("lite_capture_strategy")
+            if strategy is not None:
+                resolved["lite_capture_strategy"] = self._normalize_lite_capture_strategy(strategy)
+
+            lite_adaptive_max_pulses = self._coerce_override_int(
+                capture_overrides.get("lite_adaptive_max_pulses"),
+                minimum=1,
+                maximum=12,
+            )
+            if lite_adaptive_max_pulses is not None:
+                resolved["lite_adaptive_max_pulses"] = lite_adaptive_max_pulses
+
+            lite_review_target = self._coerce_override_int(
+                capture_overrides.get("lite_review_target"),
+                minimum=1,
+                maximum=50,
+            )
+            if lite_review_target is not None:
+                resolved["lite_review_target"] = lite_review_target
 
         adaptive_listing_navigation = self._coerce_override_bool(
             capture_overrides.get("adaptive_listing_navigation")
@@ -292,9 +325,17 @@ class PlaywrightCapture:
         review_mode = (review_mode or "none").lower()
         return 2200 if review_mode == "lite" else 5000
 
-    def _should_skip_lite_modal_readiness(self, review_mode: str, responses: List[Dict[str, Any]]) -> bool:
+    def _should_skip_lite_modal_readiness(
+        self,
+        review_mode: str,
+        responses: List[Dict[str, Any]],
+        *,
+        lite_capture_strategy: str = "normal",
+    ) -> bool:
         review_mode = (review_mode or "none").lower()
         if review_mode != "lite":
+            return False
+        if self._normalize_lite_capture_strategy(lite_capture_strategy) == "adaptive":
             return False
         return self._count_review_responses(responses) >= self._lite_min_review_responses_before_pulse()
 
@@ -437,6 +478,13 @@ class PlaywrightCapture:
             resolved_overrides.get("review_pagination_passes", self.review_pagination_passes)
         )
         review_page_wait_ms = int(resolved_overrides.get("review_page_wait_ms", self.review_page_wait_ms))
+        lite_capture_strategy = str(
+            resolved_overrides.get("lite_capture_strategy", self.lite_capture_strategy)
+        )
+        lite_adaptive_max_pulses = int(
+            resolved_overrides.get("lite_adaptive_max_pulses", self.lite_adaptive_max_pulses)
+        )
+        lite_review_target = int(resolved_overrides.get("lite_review_target", self.lite_review_target))
 
         def _mark_step(step_name: str, step_start: float) -> None:
             timings[step_name] = int((time.monotonic() - step_start) * 1000)
@@ -618,6 +666,9 @@ class PlaywrightCapture:
                         post_click_wait_ms=self._post_click_wait_ms(review_mode),
                         review_pagination_passes=review_pagination_passes,
                         review_page_wait_ms=review_page_wait_ms,
+                        lite_capture_strategy=lite_capture_strategy,
+                        lite_adaptive_max_pulses=lite_adaptive_max_pulses,
+                        lite_review_target=lite_review_target,
                     )
                     modal_open_ms = review_flow.get("modal_open_ms")
                     pagination_ms = review_flow.get("pagination_ms")
@@ -707,6 +758,9 @@ class PlaywrightCapture:
         post_click_wait_ms: Optional[int] = None,
         review_pagination_passes: Optional[int] = None,
         review_page_wait_ms: Optional[int] = None,
+        lite_capture_strategy: str = "adaptive",
+        lite_adaptive_max_pulses: Optional[int] = None,
+        lite_review_target: Optional[int] = None,
     ) -> Dict[str, Any]:
         started = time.monotonic()
         review_before = self._count_review_responses(responses)
@@ -743,7 +797,11 @@ class PlaywrightCapture:
                 pass
             if self.debug_screenshots:
                 await self._save_debug_screenshot(page, "review_after_click")
-            lite_fast_ready_path = self._should_skip_lite_modal_readiness(review_mode, responses)
+            lite_fast_ready_path = self._should_skip_lite_modal_readiness(
+                review_mode,
+                responses,
+                lite_capture_strategy=lite_capture_strategy,
+            )
             if not lite_fast_ready_path:
                 await self._resolve_translation_modal(page)
                 if self.debug_screenshots:
@@ -784,6 +842,10 @@ class PlaywrightCapture:
             max_passes=max_passes,
             review_pagination_passes=review_pagination_passes,
             review_page_wait_ms=review_page_wait_ms,
+            review_mode=review_mode,
+            lite_capture_strategy=lite_capture_strategy,
+            lite_adaptive_max_pulses=lite_adaptive_max_pulses,
+            lite_review_target=lite_review_target,
         )
         flow["pagination_ms"] = int((time.monotonic() - pagination_start) * 1000)
         flow["pagination"] = pagination
@@ -1035,14 +1097,22 @@ class PlaywrightCapture:
         max_passes: Optional[int] = None,
         review_pagination_passes: Optional[int] = None,
         review_page_wait_ms: Optional[int] = None,
+        review_mode: str = "full",
+        lite_capture_strategy: str = "adaptive",
+        lite_adaptive_max_pulses: Optional[int] = None,
+        lite_review_target: Optional[int] = None,
     ) -> Dict[str, Any]:
         started = time.monotonic()
         response_count_before = self._count_review_responses(responses)
+        estimated_reviews_before = self._count_review_items_in_responses(responses)
         stats: Dict[str, Any] = {
             "passes_executed": 0,
+            "pulses_executed": 0,
             "stopped_reason": "not_started",
             "response_count_before": int(response_count_before),
             "response_count_after": int(response_count_before),
+            "estimated_reviews_before": int(estimated_reviews_before),
+            "estimated_reviews_after": int(estimated_reviews_before),
             "duration_ms": 0,
         }
         page_wait_ms = self._coerce_override_int(review_page_wait_ms, minimum=250, maximum=10000)
@@ -1053,23 +1123,28 @@ class PlaywrightCapture:
             if max_passes is None:
                 max_passes = int(self.review_pagination_passes)
         if max_passes <= 0:
-            if response_count_before >= self._lite_min_review_responses_before_pulse():
-                stats["passes_executed"] = 0
-                stats["stopped_reason"] = "lite_mode_skip_existing_responses"
-                stats["response_count_after"] = int(response_count_before)
-                stats["duration_ms"] = int((time.monotonic() - started) * 1000)
-                return stats
-            lite_wait_ms = self._lite_pulse_wait_ms(page_wait_ms)
-            for pulse in range(min(1, self.review_scroll_pulses)):
-                await self._scroll_reviews_modal(page)
-                await page.wait_for_timeout(lite_wait_ms)
-                if self.debug_screenshots:
-                    await self._save_debug_screenshot(page, f"review_lite_p{pulse}")
-            stats["passes_executed"] = 0
-            stats["stopped_reason"] = "lite_mode_single_pulse"
-            stats["response_count_after"] = int(self._count_review_responses(responses))
-            stats["duration_ms"] = int((time.monotonic() - started) * 1000)
-            return stats
+            lite_capture_strategy = self._normalize_lite_capture_strategy(lite_capture_strategy)
+            stats["lite_capture_strategy"] = lite_capture_strategy
+            target_count = self._lite_adaptive_target_count(responses, lite_review_target)
+            stats["target_count"] = int(target_count)
+            if lite_capture_strategy == "normal":
+                return await self._paginate_reviews_lite_normal(
+                    page,
+                    responses,
+                    stats,
+                    started=started,
+                    response_count_before=response_count_before,
+                    page_wait_ms=page_wait_ms,
+                )
+            return await self._paginate_reviews_lite_adaptive(
+                page,
+                responses,
+                stats,
+                started=started,
+                page_wait_ms=page_wait_ms,
+                target_count=target_count,
+                lite_adaptive_max_pulses=lite_adaptive_max_pulses,
+            )
         no_new = 0
         stopped_reason = "max_passes_reached"
         for idx in range(max_passes):
@@ -1119,6 +1194,119 @@ class PlaywrightCapture:
                 no_new = 0
         stats["stopped_reason"] = stopped_reason
         stats["response_count_after"] = int(self._count_review_responses(responses))
+        stats["estimated_reviews_after"] = int(self._count_review_items_in_responses(responses))
+        stats["duration_ms"] = int((time.monotonic() - started) * 1000)
+        return stats
+
+    async def _paginate_reviews_lite_normal(
+        self,
+        page,
+        responses: List[Dict[str, Any]],
+        stats: Dict[str, Any],
+        *,
+        started: float,
+        response_count_before: int,
+        page_wait_ms: int,
+    ) -> Dict[str, Any]:
+        if response_count_before >= self._lite_min_review_responses_before_pulse():
+            stats["passes_executed"] = 0
+            stats["stopped_reason"] = "lite_mode_skip_existing_responses"
+            stats["response_count_after"] = int(response_count_before)
+            stats["estimated_reviews_after"] = int(self._count_review_items_in_responses(responses))
+            stats["duration_ms"] = int((time.monotonic() - started) * 1000)
+            return stats
+        lite_wait_ms = self._lite_pulse_wait_ms(page_wait_ms)
+        for pulse in range(min(1, self.review_scroll_pulses)):
+            await self._scroll_reviews_modal(page)
+            await page.wait_for_timeout(lite_wait_ms)
+            if self.debug_screenshots:
+                await self._save_debug_screenshot(page, f"review_lite_p{pulse}")
+        stats["passes_executed"] = 0
+        stats["pulses_executed"] = min(1, self.review_scroll_pulses)
+        stats["stopped_reason"] = "lite_mode_single_pulse"
+        stats["response_count_after"] = int(self._count_review_responses(responses))
+        stats["estimated_reviews_after"] = int(self._count_review_items_in_responses(responses))
+        stats["duration_ms"] = int((time.monotonic() - started) * 1000)
+        return stats
+
+    async def _paginate_reviews_lite_adaptive(
+        self,
+        page,
+        responses: List[Dict[str, Any]],
+        stats: Dict[str, Any],
+        *,
+        started: float,
+        page_wait_ms: int,
+        target_count: int,
+        lite_adaptive_max_pulses: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        max_pulses = self._coerce_override_int(
+            lite_adaptive_max_pulses,
+            minimum=1,
+            maximum=12,
+        )
+        if max_pulses is None:
+            max_pulses = int(self.lite_adaptive_max_pulses)
+        lite_wait_ms = self._lite_pulse_wait_ms(page_wait_ms)
+        stable_rounds = 0
+        previous_reviews = self._count_review_items_in_responses(responses)
+        previous_response_count = self._count_review_responses(responses)
+        previous_offsets = self._extract_review_offsets_from_responses(responses)
+        if previous_reviews >= target_count:
+            stats["stopped_reason"] = "lite_adaptive_target_met"
+            stats["response_count_after"] = int(previous_response_count)
+            stats["estimated_reviews_after"] = int(previous_reviews)
+            stats["duration_ms"] = int((time.monotonic() - started) * 1000)
+            return stats
+
+        stopped_reason = "lite_adaptive_max_pulses_reached"
+        moved_any_overall = False
+        for pulse in range(max_pulses):
+            moved = await self._scroll_reviews_modal(page)
+            moved_any_overall = moved_any_overall or moved
+            await self._click_more_reviews(page)
+            await page.wait_for_timeout(lite_wait_ms)
+            if self.debug_screenshots:
+                await self._save_debug_screenshot(page, f"review_lite_adaptive_p{pulse}")
+
+            current_reviews = self._count_review_items_in_responses(responses)
+            current_response_count = self._count_review_responses(responses)
+            current_offsets = self._extract_review_offsets_from_responses(responses)
+            stats["pulses_executed"] = pulse + 1
+            if self.debug:
+                self._debug_pagination.append(
+                    {
+                        "lite_pulse": pulse,
+                        "estimated_reviews_before": previous_reviews,
+                        "estimated_reviews_after": current_reviews,
+                        "responses_before": previous_response_count,
+                        "responses_after": current_response_count,
+                        "offsets_before": previous_offsets,
+                        "offsets_after": current_offsets,
+                        "target_count": target_count,
+                        "moved": moved,
+                    }
+                )
+            if current_reviews >= target_count:
+                stopped_reason = "lite_adaptive_target_met"
+                break
+            if current_reviews == previous_reviews and current_response_count == previous_response_count and current_offsets == previous_offsets:
+                stable_rounds += 1
+                if stable_rounds >= 2:
+                    stopped_reason = "lite_adaptive_no_growth"
+                    break
+            else:
+                stable_rounds = 0
+            previous_reviews = current_reviews
+            previous_response_count = current_response_count
+            previous_offsets = current_offsets
+
+        if not moved_any_overall and stopped_reason == "lite_adaptive_max_pulses_reached":
+            stopped_reason = "lite_adaptive_no_scroll_progress"
+        stats["passes_executed"] = 0
+        stats["stopped_reason"] = stopped_reason
+        stats["response_count_after"] = int(self._count_review_responses(responses))
+        stats["estimated_reviews_after"] = int(self._count_review_items_in_responses(responses))
         stats["duration_ms"] = int((time.monotonic() - started) * 1000)
         return stats
 
@@ -1640,6 +1828,66 @@ class PlaywrightCapture:
             if found is not None:
                 best_count = max(best_count or 0, found)
         return best_count
+
+    def _lite_adaptive_target_count(
+        self,
+        responses: List[Dict[str, Any]],
+        lite_review_target: Optional[int],
+    ) -> int:
+        target = self._coerce_override_int(lite_review_target, minimum=1, maximum=50)
+        if target is None:
+            target = int(self.lite_review_target)
+        total = self._extract_review_total_from_responses(responses)
+        if total and total > 0:
+            target = min(int(target), int(total))
+        return max(1, int(target))
+
+    def _count_review_items_in_responses(self, responses: List[Dict[str, Any]]) -> int:
+        seen = set()
+        for resp in responses:
+            if not self._looks_like_review_url(resp.get("url", "")):
+                continue
+            for item in self._extract_review_items(resp.get("data")):
+                review_id = item.get("id") or item.get("reviewId")
+                text = (
+                    item.get("comments")
+                    or item.get("comment")
+                    or item.get("reviewText")
+                    or item.get("review_text")
+                    or item.get("text")
+                )
+                if not review_id and not text:
+                    continue
+                seen.add(str(review_id or text))
+        return len(seen)
+
+    def _extract_review_items(self, data: Any) -> List[Dict[str, Any]]:
+        primary = self._deep_get(data, "data.presentation.stayProductDetailPage.reviews.reviews")
+        if isinstance(primary, list):
+            return [item for item in primary if isinstance(item, dict)]
+        return self._find_review_objects(data)
+
+    def _deep_get(self, node: Any, path: str) -> Any:
+        current = node
+        for part in path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+        return current
+
+    def _find_review_objects(self, node: Any) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        if isinstance(node, dict):
+            text_keys = {"comments", "comment", "reviewText", "review_text", "text"}
+            meta_keys = {"rating", "reviewRating", "reviewer", "author", "createdAt", "created_at"}
+            if text_keys.intersection(node.keys()) and meta_keys.intersection(node.keys()):
+                results.append(node)
+            for value in node.values():
+                results.extend(self._find_review_objects(value))
+        elif isinstance(node, list):
+            for item in node:
+                results.extend(self._find_review_objects(item))
+        return results
 
     def _count_review_responses(self, responses: List[Dict[str, Any]]) -> int:
         return sum(1 for resp in responses if self._looks_like_review_url(resp.get("url", "")))

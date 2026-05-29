@@ -57,6 +57,7 @@ class ApiCaptureOverrideTests(unittest.TestCase):
                     "review_mode": "lite",
                     "capture_timeout_ms": 9999999,
                     "review_pagination_passes": 0,
+                    "lite_capture_strategy": "normal",
                 },
             )
         self.assertEqual(response.status_code, 200)
@@ -64,6 +65,7 @@ class ApiCaptureOverrideTests(unittest.TestCase):
         _, payload = mocked_create_job.call_args.args
         self.assertEqual(payload.get("capture_timeout_ms"), 600000)
         self.assertEqual(payload.get("review_pagination_passes"), 1)
+        self.assertEqual(payload.get("lite_capture_strategy"), "normal")
 
     def test_listing_ingest_rejects_airbnb_search_urls(self) -> None:
         client = app_module.app.test_client()
@@ -101,10 +103,14 @@ class JobRunnerCaptureOverrideTests(unittest.TestCase):
         payload = {
             "capture_timeout_ms": "5000",
             "review_pagination_passes": "999",
+            "lite_capture_strategy": "normal",
+            "lite_adaptive_max_pulses": "99",
         }
         out = extract_job_runner_overrides(payload)
         self.assertEqual(out.get("capture_timeout_ms"), 10000)
         self.assertEqual(out.get("review_pagination_passes"), 24)
+        self.assertEqual(out.get("lite_capture_strategy"), "normal")
+        self.assertEqual(out.get("lite_adaptive_max_pulses"), 12)
 
     @unittest.skipIf(derive_capture_stages is None, "Job runner dependencies are unavailable")
     def test_capture_stage_progression_reaches_full(self) -> None:
@@ -289,6 +295,9 @@ class PlaywrightCaptureOverrideTests(unittest.TestCase):
                 "review_wait_ms": -1,
                 "review_pagination_passes": 99,
                 "review_page_wait_ms": 50000,
+                "lite_capture_strategy": "normal",
+                "lite_adaptive_max_pulses": 99,
+                "lite_review_target": 99,
             },
             include_reviews=True,
         )
@@ -296,6 +305,9 @@ class PlaywrightCaptureOverrideTests(unittest.TestCase):
         self.assertEqual(out.get("review_wait_ms"), 0)
         self.assertEqual(out.get("review_pagination_passes"), 24)
         self.assertEqual(out.get("review_page_wait_ms"), 10000)
+        self.assertEqual(out.get("lite_capture_strategy"), "normal")
+        self.assertEqual(out.get("lite_adaptive_max_pulses"), 12)
+        self.assertEqual(out.get("lite_review_target"), 50)
 
     @unittest.skipIf(PlaywrightCapture is None, "Playwright dependency is unavailable")
     def test_override_resolution_without_reviews_ignores_review_overrides(self) -> None:
@@ -346,6 +358,13 @@ class PlaywrightCaptureOverrideTests(unittest.TestCase):
             {"url": "https://example.com/reviews?offset=10"},
         ]
         self.assertTrue(capture._should_skip_lite_modal_readiness("lite", responses))
+        self.assertFalse(
+            capture._should_skip_lite_modal_readiness(
+                "lite",
+                responses,
+                lite_capture_strategy="adaptive",
+            )
+        )
         self.assertFalse(capture._should_skip_lite_modal_readiness("full", responses))
         self.assertFalse(capture._should_skip_lite_modal_readiness("lite", [{"url": "https://example.com/review"}]))
 
@@ -438,6 +457,7 @@ class PlaywrightCaptureOverrideTests(unittest.TestCase):
                 responses,
                 max_passes=0,
                 review_page_wait_ms=1500,
+                lite_capture_strategy="normal",
             )
         )
         self.assertEqual(stats.get("stopped_reason"), "lite_mode_skip_existing_responses")
@@ -463,12 +483,47 @@ class PlaywrightCaptureOverrideTests(unittest.TestCase):
                 responses,
                 max_passes=0,
                 review_page_wait_ms=1500,
+                lite_capture_strategy="normal",
             )
         )
         self.assertEqual(stats.get("stopped_reason"), "lite_mode_single_pulse")
         self.assertEqual(stats.get("passes_executed"), 0)
         self.assertEqual(tracker["scroll_calls"], 1)
         self.assertEqual(page.wait_calls, [capture._lite_pulse_wait_ms(1500)])
+
+    @unittest.skipIf(PlaywrightCapture is None, "Playwright dependency is unavailable")
+    def test_lite_adaptive_pagination_pulses_until_target(self) -> None:
+        capture = PlaywrightCapture(review_scroll_pulses=4, review_page_wait_ms=1500)
+        responses = [_review_response(0, ["r1", "r2"], total=20)]
+        page = _DummyPage()
+        tracker = {"scroll_calls": 0}
+
+        async def fake_scroll(_page):
+            tracker["scroll_calls"] += 1
+            if tracker["scroll_calls"] == 1:
+                responses.append(_review_response(2, ["r3", "r4"], total=20))
+            return True
+
+        async def fake_click_more(_page):
+            return None
+
+        capture._scroll_reviews_modal = fake_scroll  # type: ignore[method-assign]
+        capture._click_more_reviews = fake_click_more  # type: ignore[method-assign]
+        stats = asyncio.run(
+            capture._paginate_reviews(
+                page,
+                responses,
+                max_passes=0,
+                review_page_wait_ms=1500,
+                lite_capture_strategy="adaptive",
+                lite_review_target=4,
+                lite_adaptive_max_pulses=4,
+            )
+        )
+        self.assertEqual(stats.get("stopped_reason"), "lite_adaptive_target_met")
+        self.assertEqual(stats.get("pulses_executed"), 1)
+        self.assertEqual(stats.get("estimated_reviews_after"), 4)
+        self.assertEqual(tracker["scroll_calls"], 1)
 
 
 class _DummyPage:
@@ -480,6 +535,37 @@ class _DummyPage:
         self.wait_calls.append(ms)
         if callable(self._on_wait):
             self._on_wait(self.wait_calls, ms)
+
+
+def _review_response(offset, ids, total=24):
+    reviews = [
+        {
+            "id": review_id,
+            "comments": f"Review {review_id}",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "rating": 5,
+            "reviewer": {"name": "Guest"},
+        }
+        for review_id in ids
+    ]
+    return {
+        "url": (
+            "https://www.airbnb.com/api/v3/PdpReviews?"
+            f"variables=%7B%22pdpReviewsRequest%22%3A%7B%22offset%22%3A{offset}%2C%22limit%22%3A2%7D%7D"
+        ),
+        "data": {
+            "data": {
+                "presentation": {
+                    "stayProductDetailPage": {
+                        "reviews": {
+                            "reviewCount": total,
+                            "reviews": reviews,
+                        }
+                    }
+                }
+            }
+        },
+    }
 
 
 if __name__ == "__main__":

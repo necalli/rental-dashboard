@@ -54,14 +54,31 @@ def _coerce_float_range(value: Any, minimum: float, maximum: float) -> Optional[
     return float(parsed)
 
 
-def _extract_capture_overrides(payload: Dict[str, Any]) -> Dict[str, int]:
-    out: Dict[str, int] = {}
+def _normalize_lite_capture_strategy(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"adaptive", "normal"} else None
+
+
+def _extract_capture_overrides(payload: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
     timeout_ms = _coerce_int_range(payload.get("capture_timeout_ms"), 10000, 600000)
     if timeout_ms is not None:
         out["capture_timeout_ms"] = timeout_ms
     review_pagination_passes = _coerce_int_range(payload.get("review_pagination_passes"), 1, 24)
     if review_pagination_passes is not None:
         out["review_pagination_passes"] = review_pagination_passes
+    review_wait_ms = _coerce_int_range(payload.get("review_wait_ms"), 0, 60000)
+    if review_wait_ms is not None:
+        out["review_wait_ms"] = review_wait_ms
+    review_page_wait_ms = _coerce_int_range(payload.get("review_page_wait_ms"), 250, 10000)
+    if review_page_wait_ms is not None:
+        out["review_page_wait_ms"] = review_page_wait_ms
+    lite_strategy = _normalize_lite_capture_strategy(payload.get("lite_capture_strategy"))
+    if lite_strategy:
+        out["lite_capture_strategy"] = lite_strategy
+    lite_adaptive_max_pulses = _coerce_int_range(payload.get("lite_adaptive_max_pulses"), 1, 12)
+    if lite_adaptive_max_pulses is not None:
+        out["lite_adaptive_max_pulses"] = lite_adaptive_max_pulses
     return out
 
 
@@ -123,6 +140,14 @@ def _build_conservative_retry_overrides(capture_overrides: Optional[Dict[str, An
     merged: Dict[str, Any] = dict(capture_overrides or {})
     # Conservative retry disables adaptive listing nav for this one attempt.
     merged["adaptive_listing_navigation"] = False
+    if _normalize_lite_capture_strategy(merged.get("lite_capture_strategy")) != "normal":
+        merged["lite_capture_strategy"] = "adaptive"
+        merged["lite_adaptive_max_pulses"] = max(
+            int(merged.get("lite_adaptive_max_pulses") or 0),
+            6,
+        )
+        merged["review_page_wait_ms"] = max(int(merged.get("review_page_wait_ms") or 0), 1800)
+        merged["review_wait_ms"] = max(int(merged.get("review_wait_ms") or 0), 8000)
     return merged
 
 
@@ -706,6 +731,10 @@ class JobRunner:
 
         capture_url = self._build_pricing_url(url, payload)
         capture_overrides = _extract_capture_overrides(payload)
+        if review_limit is None:
+            review_limit = self.review_limit_default
+        if review_mode == "lite" and review_limit:
+            capture_overrides["lite_review_target"] = int(review_limit)
         job_metrics["capture_overrides"] = capture_overrides
 
         if not payload.get("force"):
@@ -770,8 +799,6 @@ class JobRunner:
         parse_started = time.monotonic()
         listing, reviews = parse_capture(capture, listing_id, capture_url)
         parse_ms = _elapsed_ms(parse_started)
-        if review_limit is None:
-            review_limit = self.review_limit_default
         if review_mode == "lite" and review_limit and reviews:
             reviews = reviews[: int(review_limit)]
 

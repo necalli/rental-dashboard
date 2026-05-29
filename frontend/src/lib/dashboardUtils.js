@@ -6,6 +6,7 @@ const COMPARE_DRAWER_KEY = 'rental-compare-drawer-width'
 const suggestDebounceMs = 400
 const defaultSettings = {
   reviewMode: 'lite',
+  liteCaptureStrategy: 'adaptive',
   liteReviewCount: 24,
   compareDisclaimer: true,
   requireMinCompareCoverage: false,
@@ -32,6 +33,8 @@ const buildCaptureOverrides = (settings, { includeReviews = true } = {}) => {
     if (reviewPaginationPasses !== null) {
       payload.review_pagination_passes = reviewPaginationPasses
     }
+    const liteCaptureStrategy = settings?.liteCaptureStrategy === 'normal' ? 'normal' : 'adaptive'
+    payload.lite_capture_strategy = liteCaptureStrategy
   }
   return payload
 }

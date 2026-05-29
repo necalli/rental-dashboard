@@ -222,8 +222,8 @@ def _extract_capture_overrides(
     payload: Dict[str, Any],
     *,
     include_review_controls: bool = True,
-) -> Dict[str, int]:
-    out: Dict[str, int] = {}
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
     timeout_ms = _coerce_int_range(payload.get("capture_timeout_ms"), 10000, 600000)
     if timeout_ms is not None:
         out["capture_timeout_ms"] = int(timeout_ms)
@@ -231,6 +231,14 @@ def _extract_capture_overrides(
         pagination_passes = _coerce_int_range(payload.get("review_pagination_passes"), 1, 24)
         if pagination_passes is not None:
             out["review_pagination_passes"] = int(pagination_passes)
+        strategy = str(payload.get("lite_capture_strategy") or "").strip().lower()
+        if strategy in {"adaptive", "normal"}:
+            out["lite_capture_strategy"] = strategy
+        lite_adaptive_max_pulses = _coerce_int_range(
+            payload.get("lite_adaptive_max_pulses"), 1, 12
+        )
+        if lite_adaptive_max_pulses is not None:
+            out["lite_adaptive_max_pulses"] = int(lite_adaptive_max_pulses)
     return out
 
 

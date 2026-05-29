@@ -55,6 +55,8 @@ def main() -> None:
     review_wait_ms = int(os.getenv("RENTAL_CAPTURE_REVIEW_WAIT_MS", "5000"))
     review_pagination_passes = int(os.getenv("RENTAL_CAPTURE_REVIEW_PAGINATION_PASSES", "6"))
     review_page_wait_ms = int(os.getenv("RENTAL_CAPTURE_REVIEW_PAGE_WAIT_MS", "1500"))
+    lite_capture_strategy = os.getenv("RENTAL_CAPTURE_LITE_STRATEGY", "adaptive").strip().lower()
+    lite_adaptive_max_pulses = int(os.getenv("RENTAL_CAPTURE_LITE_ADAPTIVE_MAX_PULSES", "4"))
     capture_debug = _parse_bool(os.getenv("RENTAL_CAPTURE_DEBUG", "false"), False)
     capture_block_resources = _parse_bool(os.getenv("RENTAL_CAPTURE_BLOCK_RESOURCES", "false"), False)
     blocked_resource_types = _parse_csv(os.getenv("RENTAL_CAPTURE_BLOCKED_RESOURCE_TYPES", "image,media,font"))
@@ -93,6 +95,9 @@ def main() -> None:
         review_wait_ms=review_wait_ms,
         review_pagination_passes=review_pagination_passes,
         review_page_wait_ms=review_page_wait_ms,
+        lite_capture_strategy=lite_capture_strategy,
+        lite_adaptive_max_pulses=lite_adaptive_max_pulses,
+        lite_review_target=review_limit_default,
         review_only=review_only,
         debug=capture_debug,
         debug_screenshots=capture_debug_screenshots,
