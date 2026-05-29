@@ -580,6 +580,29 @@ def agent_chat_message():
     return jsonify(response)
 
 
+@api_bp.post("/api/v1/agent/search-assist")
+def agent_search_assist():
+    payload = _payload()
+    prompt = str(payload.get("prompt") or payload.get("message") or "").strip()
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+    session_id = payload.get("session_id")
+    user_id = payload.get("user_id")
+    queue = payload.get("queue")
+    if queue is None:
+        queue = True
+    try:
+        response = agent_chat.search_assist(
+            session_id=session_id,
+            prompt=prompt,
+            user_id=user_id,
+            queue=_to_bool(queue, True),
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(response)
+
+
 def _sse_event_line(event: Dict[str, Any]) -> str:
     payload = event if isinstance(event, dict) else {"event": "message", "data": event}
     event_name = str(payload.get("event") or "message").strip() or "message"

@@ -31,6 +31,12 @@ def build_airbnb_search_url(params: Dict[str, Any]) -> str:
         query["price_max"] = params.get("max_price")
     if params.get("room_type"):
         query["room_types[]"] = params.get("room_type")
+    if params.get("min_bedrooms"):
+        query["min_bedrooms"] = params.get("min_bedrooms")
+    if params.get("min_beds"):
+        query["min_beds"] = params.get("min_beds")
+    if params.get("min_bathrooms"):
+        query["min_bathrooms"] = params.get("min_bathrooms")
     amenities = params.get("amenities") or []
     if isinstance(amenities, list) and amenities:
         query["amenities[]"] = amenities

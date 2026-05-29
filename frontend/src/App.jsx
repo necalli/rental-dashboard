@@ -161,6 +161,9 @@ export default function App() {
     min_price: '',
     max_price: '',
   })
+  const [aiSearchPrompt, setAiSearchPrompt] = useState('')
+  const [aiSearchSubmitting, setAiSearchSubmitting] = useState(false)
+  const [aiSearchResult, setAiSearchResult] = useState(null)
   const [urlInput, setUrlInput] = useState('')
   const [searchSubmitting, setSearchSubmitting] = useState(false)
   const [urlSubmitting, setUrlSubmitting] = useState(false)
@@ -943,6 +946,41 @@ export default function App() {
       toast.error(`Search failed: ${err.message}`)
     } finally {
       setSearchSubmitting(false)
+    }
+  }
+
+  const submitAiSearch = async (event) => {
+    event?.preventDefault()
+    const prompt = aiSearchPrompt.trim()
+    if (!prompt) {
+      toast.error('Describe the listing search you want to run.')
+      return
+    }
+    setAiSearchSubmitting(true)
+    setAiSearchResult(null)
+    try {
+      const response = await requestJson('/api/v1/agent/search-assist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          session_id: 'main-ai-search',
+          queue: true,
+        }),
+      })
+      setAiSearchResult(response)
+      if (response.status === 'queued') {
+        toast.success(response.message || 'AI search queued.')
+        setAiSearchPrompt('')
+        refreshJobs()
+        refreshRuns()
+        return
+      }
+      toast.message(response.message || 'Search needs clarification.')
+    } catch (err) {
+      toast.error(`AI search failed: ${err.message}`)
+    } finally {
+      setAiSearchSubmitting(false)
     }
   }
 
@@ -2387,6 +2425,66 @@ export default function App() {
         </aside>
 
         <main className="min-w-0 flex-1 space-y-6">
+          <form
+            onSubmit={submitAiSearch}
+            className="rounded-xl border border-border/60 bg-background/70 p-3"
+          >
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={aiSearchPrompt}
+                  onChange={(event) => setAiSearchPrompt(event.target.value)}
+                  placeholder="AI listing search: Phoenicia July 18-25, 4 adults, dog friendly, hot tub, under $400"
+                  className="pl-9"
+                />
+              </div>
+              <Button type="submit" disabled={aiSearchSubmitting}>
+                {aiSearchSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Search
+              </Button>
+            </div>
+            {aiSearchResult && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                <Badge variant={aiSearchResult.status === 'queued' ? 'secondary' : 'outline'}>
+                  {aiSearchResult.status || 'ready'}
+                </Badge>
+                {aiSearchResult.intent?.location && (
+                  <Badge variant="outline">{aiSearchResult.intent.location}</Badge>
+                )}
+                {aiSearchResult.intent?.check_in && aiSearchResult.intent?.check_out && (
+                  <Badge variant="outline">
+                    {aiSearchResult.intent.check_in} - {aiSearchResult.intent.check_out}
+                  </Badge>
+                )}
+                {aiSearchResult.intent?.adults && (
+                  <Badge variant="outline">{aiSearchResult.intent.adults} adults</Badge>
+                )}
+                {Number(aiSearchResult.intent?.pets || 0) > 0 && (
+                  <Badge variant="outline">Pets</Badge>
+                )}
+                {aiSearchResult.intent?.max_price && (
+                  <Badge variant="outline">Max ${aiSearchResult.intent.max_price}</Badge>
+                )}
+                {(aiSearchResult.intent?.amenities || []).slice(0, 5).map((amenity) => (
+                  <Badge key={amenity} variant="outline">
+                    {amenity}
+                  </Badge>
+                ))}
+                {aiSearchResult.message && (
+                  <span className="text-muted-foreground">{aiSearchResult.message}</span>
+                )}
+              </div>
+            )}
+            {aiSearchResult?.unsupported_or_uncertain_requests?.length > 0 && (
+              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                {aiSearchResult.unsupported_or_uncertain_requests.slice(0, 3).map((item) => (
+                  <p key={item}>{item}</p>
+                ))}
+              </div>
+            )}
+          </form>
+
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="inline-flex rounded-full border border-border/60 bg-background/60 p-1 text-sm">
               <Button

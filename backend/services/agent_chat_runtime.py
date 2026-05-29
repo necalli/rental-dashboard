@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from .agent_chat import AgentChatOrchestrator
 from .agent_skills import enabled_tool_names, load_skill_packages, skill_system_prompt
+from .search_assist import SearchAssistService
 from .storage import Storage
 
 try:
@@ -2800,9 +2801,31 @@ class ClaudeAgentSdkRuntime(ClaudeSkillRuntime):
 class AgentChatRuntime:
     def __init__(self, storage: Storage) -> None:
         self.local = AgentChatOrchestrator(storage=storage)
+        self.search_assist_service = SearchAssistService(storage=storage)
         self.runtime = str(os.getenv("RENTAL_AGENT_RUNTIME", "deterministic") or "deterministic").strip().lower()
         self.claude = ClaudeSkillRuntime(self.local)
         self.agent_sdk = ClaudeAgentSdkRuntime(self.local)
+
+    def search_assist(
+        self,
+        *,
+        prompt: str,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        queue: bool = True,
+    ) -> Dict[str, Any]:
+        result = self.search_assist_service.assist(prompt, queue=queue)
+        debug = result.get("debug") if isinstance(result.get("debug"), dict) else {}
+        debug.update(
+            {
+                "runtime": "deterministic_search_assist",
+                "session_id": session_id,
+                "user_id": user_id,
+                "tool_allowlist": ["tool.search_create"],
+            }
+        )
+        result["debug"] = debug
+        return result
 
     def chat(self, *, session_id: Optional[str], message: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         if self.runtime in {"agent_sdk", "claude_agent_sdk"} and self.agent_sdk.is_available():

@@ -1336,6 +1336,14 @@ class AgentChatOrchestrator:
         children: Optional[int] = None,
         infants: Optional[int] = None,
         pets: Optional[int] = None,
+        min_price: Optional[int] = None,
+        max_price: Optional[int] = None,
+        room_type: Optional[str] = None,
+        amenities: Optional[List[str]] = None,
+        flexible_cancellation: Optional[bool] = None,
+        min_bedrooms: Optional[int] = None,
+        min_beds: Optional[int] = None,
+        min_bathrooms: Optional[int] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"location": str(location or "").strip()}
         if check_in:
@@ -1346,6 +1354,22 @@ class AgentChatOrchestrator:
         payload["children"] = self._parse_int_range(children, minimum=0, maximum=10, fallback=0)
         payload["infants"] = self._parse_int_range(infants, minimum=0, maximum=10, fallback=0)
         payload["pets"] = self._parse_int_range(pets, minimum=0, maximum=10, fallback=0)
+        if min_price is not None:
+            payload["min_price"] = self._parse_int_range(min_price, minimum=0, maximum=100000, fallback=0)
+        if max_price is not None:
+            payload["max_price"] = self._parse_int_range(max_price, minimum=0, maximum=100000, fallback=0)
+        if room_type:
+            payload["room_type"] = str(room_type).strip()
+        if isinstance(amenities, list):
+            payload["amenities"] = [str(item).strip() for item in amenities if str(item).strip()]
+        if flexible_cancellation is not None:
+            payload["flexible_cancellation"] = _to_bool(flexible_cancellation, False)
+        if min_bedrooms is not None:
+            payload["min_bedrooms"] = self._parse_int_range(min_bedrooms, minimum=1, maximum=20, fallback=1)
+        if min_beds is not None:
+            payload["min_beds"] = self._parse_int_range(min_beds, minimum=1, maximum=20, fallback=1)
+        if min_bathrooms is not None:
+            payload["min_bathrooms"] = self._parse_int_range(min_bathrooms, minimum=1, maximum=20, fallback=1)
         return self._tool_search_create(payload=payload)
 
     def _tool_listing_ingest_url_args(
@@ -1547,6 +1571,14 @@ class AgentChatOrchestrator:
                         "children": {"type": "integer", "minimum": 0, "maximum": 10},
                         "infants": {"type": "integer", "minimum": 0, "maximum": 10},
                         "pets": {"type": "integer", "minimum": 0, "maximum": 10},
+                        "min_price": {"type": "integer", "minimum": 0, "maximum": 100000},
+                        "max_price": {"type": "integer", "minimum": 0, "maximum": 100000},
+                        "room_type": {"type": "string"},
+                        "amenities": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                        "flexible_cancellation": {"type": "boolean"},
+                        "min_bedrooms": {"type": "integer", "minimum": 1, "maximum": 20},
+                        "min_beds": {"type": "integer", "minimum": 1, "maximum": 20},
+                        "min_bathrooms": {"type": "integer", "minimum": 1, "maximum": 20},
                     },
                     "required": ["location"],
                     "additionalProperties": False,

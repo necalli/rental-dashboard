@@ -84,6 +84,49 @@ class AgentChatApiTests(unittest.TestCase):
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0].get("tool"), "tool.jobs_list")
 
+    def test_agent_search_assist_queues_search_only_job(self) -> None:
+        client = app_module.app.test_client()
+        fake_job = {"job_id": "search-1", "job_type": "search", "status": "queued"}
+        with patch.object(app_module.storage, "create_job", return_value=fake_job) as mocked_create_job:
+            response = client.post(
+                "/api/v1/agent/search-assist",
+                json={
+                    "prompt": (
+                        "Find a private room near Phoenicia July 18-25, 2026 "
+                        "for 4 adults with a dog, hot tub, 2 bedrooms, under $400"
+                    )
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json() or {}
+        self.assertEqual(data.get("status"), "queued")
+        self.assertEqual(data.get("job"), fake_job)
+        self.assertEqual(mocked_create_job.call_count, 1)
+        job_type, payload = mocked_create_job.call_args.args
+        self.assertEqual(job_type, "search")
+        self.assertEqual(payload.get("location"), "Phoenicia")
+        self.assertEqual(payload.get("check_in"), "2026-07-18")
+        self.assertEqual(payload.get("check_out"), "2026-07-25")
+        self.assertEqual(payload.get("adults"), 4)
+        self.assertEqual(payload.get("pets"), 1)
+        self.assertEqual(payload.get("max_price"), 400)
+        self.assertEqual(payload.get("room_type"), "Private room")
+        self.assertIn("hot tub", payload.get("amenities") or [])
+        self.assertEqual(payload.get("min_bedrooms"), 2)
+
+    def test_agent_search_assist_requires_destination(self) -> None:
+        client = app_module.app.test_client()
+        with patch.object(app_module.storage, "create_job") as mocked_create_job:
+            response = client.post(
+                "/api/v1/agent/search-assist",
+                json={"prompt": "Find something nice with a hot tub under $300"},
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json() or {}
+        self.assertEqual(data.get("status"), "clarification_needed")
+        self.assertIn("destination", data.get("message") or "")
+        self.assertEqual(mocked_create_job.call_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
