@@ -1339,12 +1339,12 @@ export default function App() {
           </DialogContent>
         </Dialog>
         <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-          <DialogContent>
-            <DialogHeader>
+          <DialogContent className="max-h-[calc(100vh-2rem)] overflow-hidden sm:max-w-xl">
+            <DialogHeader className="shrink-0">
               <DialogTitle>Settings</DialogTitle>
               <DialogDescription>Tune capture and comparison defaults.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4 text-sm">
+            <div className="grid max-h-[calc(100vh-8rem)] gap-4 overflow-y-auto pr-2 text-sm">
               <div className="grid gap-2">
                 <Label>Default review capture mode</Label>
                 <select
