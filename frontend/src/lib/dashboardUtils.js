@@ -180,7 +180,6 @@ const getReviewCoverage = (listing) => {
   if (!listing) return { captured: null, total: null, mode: null, coverage: null }
   const captured =
     safeNumber(listing.reviews_captured_count) ??
-    safeNumber(listing.review_count) ??
     safeNumber(listing.reviews_count)
   const total =
     safeNumber(listing.reviews_total_count) ??
@@ -192,6 +191,10 @@ const getReviewCoverage = (listing) => {
     safeNumber(listing.review_coverage) ??
     (captured && total ? Math.min(captured / total, 1) : null)
   return { captured, total, mode, coverage }
+}
+const hasReviewCaptureGap = (listing) => {
+  const { captured, total, mode } = getReviewCoverage(listing)
+  return (mode === 'lite' || mode === 'full') && Number(total || 0) > 0 && Number(captured || 0) <= 0
 }
 const getComparisonCoverage = (listing, reviewLimit = 24) => {
   const limit = clampInteger(reviewLimit, 1, 50, 24) || 24
@@ -248,14 +251,19 @@ const getCaptureStageBadgeVariant = (listing) => {
 }
 const formatReviewCoverage = (listing) => {
   const { captured, total, mode } = getReviewCoverage(listing)
-  if (!captured && !total) return mode ? `Reviews (${mode})` : null
+  const capturedValue = captured !== null && captured !== undefined ? Number(captured) : null
+  const totalValue = total !== null && total !== undefined ? Number(total) : null
+  if ((mode === 'lite' || mode === 'full') && totalValue && !capturedValue) {
+    return `Reviews 0/${totalValue} (${mode})`
+  }
+  if (!capturedValue && !totalValue) return mode ? `Reviews (${mode})` : null
   let label = 'Reviews'
-  if (captured && total) {
-    label = `Reviews ${captured}/${total}`
-  } else if (total) {
-    label = `Reviews ${total}`
-  } else if (captured) {
-    label = `Reviews ${captured}`
+  if (capturedValue && totalValue) {
+    label = `Reviews ${capturedValue}/${totalValue}`
+  } else if (totalValue) {
+    label = mode ? `Reviews 0/${totalValue}` : `Reviews ${totalValue} total`
+  } else if (capturedValue) {
+    label = `Reviews ${capturedValue}`
   }
   if (mode) {
     label = `${label} (${mode})`
@@ -289,6 +297,7 @@ const getValidationLabel = (listing) => {
   const validation = getValidation(listing)
   const errors = validation.errors || []
   const warnings = validation.warnings || []
+  if (hasReviewCaptureGap(listing)) return 'Partial'
   if (errors.length > 0) return 'Failed'
   if (warnings.length > 0) return 'Partial'
   return 'Complete'
@@ -393,6 +402,7 @@ export {
   getListingRating,
   getListingCoordinates,
   getReviewCoverage,
+  hasReviewCaptureGap,
   getComparisonCoverage,
   getCaptureStage,
   getCaptureStageLabel,

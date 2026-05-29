@@ -69,6 +69,7 @@ import {
   getCaptureStageLabel,
   getCaptureStageBadgeVariant,
   formatReviewCoverage,
+  hasReviewCaptureGap,
   needsFullReviews,
   getCaptureStageGuidance,
   getValidation,
@@ -2045,7 +2046,11 @@ export default function App() {
                 </div>
               )}
               {!detailsReviewsLoading && detailsReviews.length === 0 && (
-                <p className="mt-2 text-xs text-muted-foreground">No reviews loaded yet.</p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {hasReviewCaptureGap(detailsListing)
+                    ? 'Review total is known, but no review text was captured yet. Use Full reviews to retry review capture.'
+                    : 'No reviews loaded yet.'}
+                </p>
               )}
               <div className="mt-3 space-y-3">
                 {detailsReviews.map((review) => (

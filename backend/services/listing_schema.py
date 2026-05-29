@@ -75,6 +75,14 @@ def validate_listing(listing: Dict[str, Any]) -> Dict[str, Any]:
         if _get_path(listing, path) in (None, "", []):
             warnings.append(message)
 
+    review_mode = str(listing.get("review_mode") or "").strip().lower()
+    reviews_total = _to_int(listing.get("reviews_total_count")) or _to_int(
+        _get_path(listing, "reviews_summary.count")
+    )
+    reviews_captured = _to_int(listing.get("reviews_captured_count")) or 0
+    if review_mode in {"lite", "full"} and reviews_total and reviews_captured <= 0:
+        warnings.append("missing captured reviews")
+
     quality_score = _quality_score(listing, [p for p, _ in optional_paths])
 
     return {
