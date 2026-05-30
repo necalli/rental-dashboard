@@ -384,7 +384,9 @@ export default function App() {
     jobs.forEach((job) => {
       next.set(job.job_id, job)
       const previous = prev.get(job.job_id)
-      if (previous && previous.status === job.status) {
+      const statusChanged = previous && previous.status !== job.status
+      const newlyDiscoveredComplete = !previous && job.status === 'complete'
+      if (!statusChanged && !newlyDiscoveredComplete) {
         return
       }
       if (job.status === 'complete') {
