@@ -29,7 +29,7 @@ def parse_search_from_responses_with_meta(
         if not currency_hint:
             currency_hint = _extract_currency_from_response_url(response.get("url"))
         data = response.get("data")
-        generic = _collect_candidates(data, depth=6)
+        generic = _collect_candidates(data, depth=14)
         from_stays_search = _collect_stays_search_candidates(data)
         generic_candidate_count += len(generic)
         stays_search_candidate_count += len(from_stays_search)
@@ -82,18 +82,31 @@ def _collect_candidates(node: Any, depth: int) -> List[Dict[str, Any]]:
     if depth <= 0:
         return output
     if isinstance(node, dict):
+        for wrapper_key in ("node", "item", "result", "listingCard"):
+            wrapped = node.get(wrapper_key)
+            if isinstance(wrapped, dict):
+                output.extend(_collect_candidates(wrapped, depth - 1))
         if isinstance(node.get("listing"), dict):
             output.append(node)
         elif isinstance(node.get("stay"), dict):
             output.append(node)
         elif isinstance(node.get("stayListing"), dict):
             output.append(node)
+        elif isinstance(node.get("demandStayListing"), dict):
+            output.append(node)
         elif "listingId" in node or "stayListingId" in node:
+            output.append(node)
+        elif "propertyId" in node and (
+            "structuredDisplayPrice" in node
+            or "pricingQuote" in node
+            or "title" in node
+            or "nameLocalized" in node
+        ):
             output.append(node)
         for value in node.values():
             output.extend(_collect_candidates(value, depth - 1))
     elif isinstance(node, list):
-        for item in node[:200]:
+        for item in node[:500]:
             output.extend(_collect_candidates(item, depth - 1))
     return output
 
@@ -104,6 +117,14 @@ def _normalize_candidate(
     currency_hint: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     listing = None
+    if isinstance(item.get("node"), dict):
+        item = item.get("node") or item
+    elif isinstance(item.get("item"), dict):
+        item = item.get("item") or item
+    elif isinstance(item.get("result"), dict):
+        item = item.get("result") or item
+    elif isinstance(item.get("listingCard"), dict):
+        item = item.get("listingCard") or item
     for key in ("listing", "stayListing", "stay"):
         if isinstance(item.get(key), dict):
             listing = item.get(key)
@@ -117,6 +138,7 @@ def _normalize_candidate(
         or listing.get("stayListingId")
         or item.get("listingId")
         or item.get("stayListingId")
+        or item.get("roomId")
         or item.get("propertyId")
     )
     if not listing_id and search_listing:
@@ -279,27 +301,103 @@ def _collect_stays_search_candidates(data: Any) -> List[Dict[str, Any]]:
     if not stays and isinstance(presentation, dict):
         stays = presentation.get("staysSearch")
     if isinstance(stays, dict):
-        results = stays.get("results")
-        if isinstance(results, dict):
-            for key in ("searchResults", "searchResultsV2", "results", "items"):
-                items = results.get(key)
-                if isinstance(items, list):
-                    output.extend(items)
-        map_results = stays.get("mapResults")
-        if isinstance(map_results, dict):
-            for key in ("mapSearchResults", "staysInViewport", "searchResults"):
-                items = map_results.get(key)
-                if isinstance(items, list):
-                    output.extend(items)
-        for key in ("searchResults", "searchResultsV2", "results"):
-            items = stays.get(key)
-            if isinstance(items, list):
-                output.extend(items)
-    for key in ("searchResults", "results"):
+        output.extend(_collect_result_items(stays, depth=8))
+
+    for stays_node in _collect_named_values(
+        root,
+        {"staysSearch", "staysSearchResults"},
+        depth=12,
+    ):
+        output.extend(_collect_result_items(stays_node, depth=10))
+
+    for key in ("searchResults", "searchResultsV2", "mapResults", "results"):
         items = root.get(key)
         if isinstance(items, list):
             output.extend(items)
+        elif isinstance(items, dict):
+            output.extend(_collect_result_items(items, depth=8))
     return output
+
+
+def _collect_named_values(node: Any, names: set[str], depth: int) -> List[Any]:
+    output: List[Any] = []
+    if depth <= 0:
+        return output
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in names and isinstance(value, (dict, list)):
+                output.append(value)
+            if isinstance(value, (dict, list)):
+                output.extend(_collect_named_values(value, names, depth - 1))
+    elif isinstance(node, list):
+        for item in node[:500]:
+            if isinstance(item, (dict, list)):
+                output.extend(_collect_named_values(item, names, depth - 1))
+    return output
+
+
+def _collect_result_items(node: Any, depth: int) -> List[Dict[str, Any]]:
+    output: List[Dict[str, Any]] = []
+    if depth <= 0:
+        return output
+    if isinstance(node, list):
+        for item in node[:500]:
+            if isinstance(item, dict):
+                if _looks_like_search_result_item(item):
+                    output.append(item)
+                output.extend(_collect_result_items(item, depth - 1))
+        return output
+    if not isinstance(node, dict):
+        return output
+    if _looks_like_search_result_item(node):
+        output.append(node)
+    for key in (
+        "searchResults",
+        "searchResultsV2",
+        "mapResults",
+        "mapSearchResults",
+        "mapSearchResultsV2",
+        "staysInViewport",
+        "results",
+        "resultItems",
+        "resultSections",
+        "items",
+        "listingItems",
+        "edges",
+        "sections",
+        "cards",
+        "cardSections",
+        "itemSections",
+        "exploreTabs",
+        "listingCards",
+    ):
+        value = node.get(key)
+        if isinstance(value, (dict, list)):
+            output.extend(_collect_result_items(value, depth - 1))
+    for wrapper_key in ("node", "item", "result", "listingCard", "card"):
+        value = node.get(wrapper_key)
+        if isinstance(value, dict):
+            output.extend(_collect_result_items(value, depth - 1))
+    return output
+
+
+def _looks_like_search_result_item(item: Dict[str, Any]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if any(isinstance(item.get(key), dict) for key in ("listing", "stayListing", "stay", "demandStayListing")):
+        return True
+    if "listingId" in item or "stayListingId" in item:
+        return True
+    if "roomId" in item and ("title" in item or "name" in item or "structuredDisplayPrice" in item):
+        return True
+    if "propertyId" in item and (
+        "structuredDisplayPrice" in item
+        or "pricingQuote" in item
+        or "title" in item
+        or "nameLocalized" in item
+    ):
+        return True
+    return False
 
 
 def _extract_search_result_listing(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -315,6 +413,8 @@ def _extract_search_result_listing_id(item: Dict[str, Any]) -> Optional[str]:
     if not isinstance(item, dict):
         return None
     listing_id = item.get("propertyId")
+    if not listing_id:
+        listing_id = item.get("roomId")
     if listing_id:
         return str(listing_id)
     listing = item.get("demandStayListing")
@@ -578,7 +678,7 @@ def _parse_price_value(text: Optional[str]) -> Optional[float]:
     if not text or not isinstance(text, str):
         return None
     cleaned = text.replace("\u00a0", " ")
-    match = re.search(r"([0-9]+(?:\\.[0-9]+)?)", cleaned.replace(",", ""))
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)", cleaned.replace(",", ""))
     if match:
         try:
             return float(match.group(1))
@@ -590,7 +690,7 @@ def _parse_price_value(text: Optional[str]) -> Optional[float]:
 def _extract_nights(text: str) -> Optional[int]:
     if not text:
         return None
-    match = re.search(r"(\\d+)\\s+nights?", text.lower())
+    match = re.search(r"(\d+)\s+nights?", text.lower())
     if match:
         return _to_int(match.group(1))
     return None
@@ -784,6 +884,10 @@ def _to_int(value: Any) -> Optional[int]:
     try:
         if value is None:
             return None
+        if isinstance(value, str):
+            match = re.search(r"(\d+)", value.replace(",", ""))
+            if match:
+                return int(match.group(1))
         return int(value)
     except Exception:
         return None
@@ -794,7 +898,7 @@ def _to_float(value: Any) -> Optional[float]:
         if value is None:
             return None
         if isinstance(value, str):
-            match = re.search(r"([0-9]+(?:\\.[0-9]+)?)", value)
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)", value)
             if match:
                 return float(match.group(1))
         return float(value)

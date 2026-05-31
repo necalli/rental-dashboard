@@ -192,6 +192,73 @@ class SearchParserDriftTests(unittest.TestCase):
         warnings = parser_meta.get("warnings") or []
         self.assertIn("no_candidates_found", warnings)
 
+    def test_search_parser_handles_nested_current_stays_search_shape(self) -> None:
+        responses = [
+            {
+                "url": "https://www.airbnb.com/api/v3/StaysSearch?operationName=StaysSearch&currency=USD",
+                "data": {
+                    "data": {
+                        "presentation": {
+                            "staysSearch": {
+                                "results": {
+                                    "searchResults": {
+                                        "edges": [
+                                            {
+                                                "node": {
+                                                    "listingCard": {
+                                                        "propertyId": "987654",
+                                                        "title": "Cabin in Phoenicia",
+                                                        "subtitle": "Entire cabin",
+                                                        "structuredDisplayPrice": {
+                                                            "primaryLine": {
+                                                                "price": "$1,400",
+                                                                "accessibilityLabel": "$1,400 total for 7 nights",
+                                                            },
+                                                            "displayPriceStyle": "TOTAL",
+                                                        },
+                                                        "avgRatingLocalized": "4.96",
+                                                        "structuredContent": {
+                                                            "primaryLine": "Phoenicia",
+                                                            "reviewSnippet": "128 reviews",
+                                                        },
+                                                        "location": {"lat": 42.08, "lng": -74.31},
+                                                        "pictures": [{"url": "https://example.test/photo.jpg"}],
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    }
+                                },
+                                "mapResults": {
+                                    "mapSearchResults": [
+                                        {
+                                            "propertyId": "987654",
+                                            "title": "Cabin in Phoenicia",
+                                            "location": {"lat": 42.08, "lng": -74.31},
+                                        }
+                                    ]
+                                },
+                            }
+                        }
+                    }
+                },
+            }
+        ]
+
+        listings, parser_meta = parse_search_from_responses_with_meta(
+            responses,
+            "https://www.airbnb.com/s/Phoenicia--NY/homes",
+        )
+
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(listings[0].get("id"), "987654")
+        self.assertEqual(listings[0].get("title"), "Cabin in Phoenicia")
+        self.assertEqual(listings[0].get("url"), "https://www.airbnb.com/rooms/987654")
+        self.assertEqual(listings[0].get("rating"), 4.96)
+        self.assertEqual(listings[0].get("review_count"), 128)
+        self.assertEqual((listings[0].get("pricing") or {}).get("price_total"), 1400.0)
+        self.assertFalse(parser_meta.get("drift_detected"))
+
 
 if __name__ == "__main__":
     unittest.main()
