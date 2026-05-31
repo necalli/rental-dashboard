@@ -87,7 +87,10 @@ class AgentChatApiTests(unittest.TestCase):
     def test_agent_search_assist_queues_search_only_job(self) -> None:
         client = app_module.app.test_client()
         fake_job = {"job_id": "search-1", "job_type": "search", "status": "queued"}
-        with patch.object(app_module.storage, "create_job", return_value=fake_job) as mocked_create_job:
+        with (
+            patch("services.search_assist.suggest_locations", return_value=[]),
+            patch.object(app_module.storage, "create_job", return_value=fake_job) as mocked_create_job,
+        ):
             response = client.post(
                 "/api/v1/agent/search-assist",
                 json={
@@ -116,7 +119,10 @@ class AgentChatApiTests(unittest.TestCase):
 
     def test_agent_search_assist_requires_destination(self) -> None:
         client = app_module.app.test_client()
-        with patch.object(app_module.storage, "create_job") as mocked_create_job:
+        with (
+            patch("services.search_assist.suggest_locations", return_value=[]),
+            patch.object(app_module.storage, "create_job") as mocked_create_job,
+        ):
             response = client.post(
                 "/api/v1/agent/search-assist",
                 json={"prompt": "Find something nice with a hot tub under $300"},
@@ -125,6 +131,29 @@ class AgentChatApiTests(unittest.TestCase):
         data = response.get_json() or {}
         self.assertEqual(data.get("status"), "clarification_needed")
         self.assertIn("destination", data.get("message") or "")
+        self.assertEqual(mocked_create_job.call_count, 0)
+
+    def test_agent_search_assist_rejects_irrelevant_model_classification(self) -> None:
+        client = app_module.app.test_client()
+        model_payload = {
+            "status": "rejected",
+            "intent": {},
+            "message": "This bar only runs rental listing searches.",
+            "unsupported_or_uncertain_requests": ["not a listing search"],
+            "confidence": 0.9,
+        }
+        with (
+            patch.object(app_module.agent_chat.claude, "api_key", "test-key"),
+            patch.object(app_module.agent_chat.claude, "parse_search_assist_prompt", return_value=model_payload),
+            patch.object(app_module.storage, "create_job") as mocked_create_job,
+        ):
+            response = client.post(
+                "/api/v1/agent/search-assist",
+                json={"prompt": "write a poem about breakfast"},
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json() or {}
+        self.assertEqual(data.get("status"), "rejected")
         self.assertEqual(mocked_create_job.call_count, 0)
 
 

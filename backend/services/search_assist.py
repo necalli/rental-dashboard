@@ -3,6 +3,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from .geo_suggest import suggest_locations
+
 
 MONTHS = {
     "jan": 1,
@@ -82,6 +84,8 @@ class SearchAssistResult:
     message: str
     job: Optional[Dict[str, Any]] = None
     unsupported_or_uncertain_requests: Optional[List[str]] = None
+    location_candidates: Optional[List[Dict[str, Any]]] = None
+    clarification_question: Optional[str] = None
     confidence: float = 0.0
 
     def as_dict(self) -> Dict[str, Any]:
@@ -94,6 +98,10 @@ class SearchAssistResult:
         }
         if self.job is not None:
             payload["job"] = self.job
+        if self.location_candidates:
+            payload["location_candidates"] = self.location_candidates
+        if self.clarification_question:
+            payload["clarification_question"] = self.clarification_question
         return payload
 
 
@@ -101,17 +109,72 @@ class SearchAssistService:
     def __init__(self, storage) -> None:
         self.storage = storage
 
-    def assist(self, prompt: str, *, queue: bool = True) -> Dict[str, Any]:
+    def assist(
+        self,
+        prompt: str,
+        *,
+        queue: bool = True,
+        parsed_intent: Optional[Dict[str, Any]] = None,
+        parsed_status: Optional[str] = None,
+        parsed_message: Optional[str] = None,
+        parsed_unsupported: Optional[List[str]] = None,
+        parsed_confidence: Optional[float] = None,
+        location_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
         text = str(prompt or "").strip()
-        intent, unsupported, confidence = self.parse_intent(text)
+        if isinstance(parsed_intent, dict):
+            intent, unsupported, confidence = self._normalize_external_intent(
+                parsed_intent,
+                parsed_unsupported or [],
+                parsed_confidence,
+            )
+        else:
+            intent, unsupported, confidence = self.parse_intent(text)
+        status_hint = str(parsed_status or "").strip().lower()
+        if status_hint == "rejected":
+            return SearchAssistResult(
+                status="rejected",
+                intent=intent,
+                message=parsed_message or "This search bar only runs rental listing searches.",
+                unsupported_or_uncertain_requests=unsupported,
+                confidence=min(confidence, 0.45),
+            ).as_dict()
+        if location_override:
+            intent["location"] = str(location_override).strip()
+            intent["location_resolution"] = {
+                "source": "user_confirmation",
+                "input": str(location_override).strip(),
+                "resolved_label": str(location_override).strip(),
+                "auto_selected": False,
+            }
+        else:
+            location_resolution = self.resolve_location(intent.get("location"))
+            if location_resolution.get("status") == "clarification_needed":
+                return SearchAssistResult(
+                    status="clarification_needed",
+                    intent=intent,
+                    message=location_resolution.get("message")
+                    or "Please confirm which location you want to search.",
+                    unsupported_or_uncertain_requests=unsupported,
+                    location_candidates=location_resolution.get("candidates") or [],
+                    clarification_question=location_resolution.get("question"),
+                    confidence=min(confidence, 0.7),
+                ).as_dict()
+            resolved_label = location_resolution.get("resolved_label")
+            if resolved_label:
+                intent["location"] = resolved_label
+            if location_resolution:
+                intent["location_resolution"] = location_resolution
+
         validation = self.validate_intent(text, intent)
         unsupported = list(dict.fromkeys([*unsupported, *validation.get("unsupported", [])]))
         if validation.get("error"):
             return SearchAssistResult(
                 status="clarification_needed",
                 intent=intent,
-                message=validation["error"],
+                message=parsed_message if status_hint == "clarification_needed" and parsed_message else validation["error"],
                 unsupported_or_uncertain_requests=unsupported,
+                clarification_question=parsed_message if status_hint == "clarification_needed" else None,
                 confidence=min(confidence, 0.45),
             ).as_dict()
         if not queue:
@@ -131,6 +194,134 @@ class SearchAssistService:
             unsupported_or_uncertain_requests=unsupported,
             confidence=confidence,
         ).as_dict()
+
+    def resolve_location(self, location: Any) -> Dict[str, Any]:
+        raw = str(location or "").strip()
+        if not raw:
+            return {}
+        candidates = self._location_suggestions(raw)
+        if not candidates:
+            return {
+                "source": "geoapify",
+                "input": raw,
+                "resolved_label": raw,
+                "auto_selected": False,
+                "status": "unresolved",
+            }
+        auto = self._auto_select_location(raw, candidates)
+        if auto:
+            return {
+                "source": "geoapify",
+                "input": raw,
+                "resolved_label": auto.get("label") or raw,
+                "selected_candidate": auto,
+                "candidate_count": len(candidates),
+                "auto_selected": True,
+                "status": "resolved",
+            }
+        return {
+            "source": "geoapify",
+            "input": raw,
+            "status": "clarification_needed",
+            "message": f"Please confirm which {raw} you want to search.",
+            "question": "Choose a location to run the search.",
+            "candidates": candidates[:5],
+            "candidate_count": len(candidates),
+            "auto_selected": False,
+        }
+
+    def _location_suggestions(self, raw: str) -> List[Dict[str, Any]]:
+        try:
+            suggestions = suggest_locations(raw)
+        except Exception:
+            return []
+        if not isinstance(suggestions, list):
+            return []
+        output = []
+        for item in suggestions[:5]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            if not label:
+                continue
+            output.append(
+                {
+                    "label": label,
+                    "city": item.get("city"),
+                    "state": item.get("state"),
+                    "country": item.get("country"),
+                    "lat": item.get("lat"),
+                    "lng": item.get("lng"),
+                    "type": item.get("type"),
+                }
+            )
+        return output
+
+    def _auto_select_location(self, raw: str, candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if len(candidates) == 1:
+            return candidates[0]
+        raw_norm = self._normalize_location_token(raw)
+        if not raw_norm:
+            return None
+        exact = []
+        for candidate in candidates:
+            city = self._normalize_location_token(candidate.get("city"))
+            label = self._normalize_location_token(str(candidate.get("label") or "").split(",", 1)[0])
+            if raw_norm and raw_norm in {city, label}:
+                exact.append(candidate)
+        if len(exact) == 1:
+            return exact[0]
+        if "," in raw:
+            return candidates[0]
+        return None
+
+    def _normalize_location_token(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        text = re.sub(r"[^a-z0-9]+", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _normalize_external_intent(
+        self,
+        intent: Dict[str, Any],
+        unsupported: List[str],
+        confidence: Optional[float],
+    ) -> Tuple[Dict[str, Any], List[str], float]:
+        normalized: Dict[str, Any] = {}
+        allowed = {
+            "location",
+            "check_in",
+            "check_out",
+            "adults",
+            "children",
+            "infants",
+            "pets",
+            "min_price",
+            "max_price",
+            "room_type",
+            "amenities",
+            "flexible_cancellation",
+            "min_bedrooms",
+            "min_beds",
+            "min_bathrooms",
+        }
+        for key, value in intent.items():
+            if key not in allowed or value in (None, "", []):
+                continue
+            normalized[key] = value
+        normalized.setdefault("adults", 1)
+        normalized.setdefault("children", 0)
+        normalized.setdefault("infants", 0)
+        normalized.setdefault("pets", 0)
+        if isinstance(normalized.get("amenities"), list):
+            normalized["amenities"] = [
+                str(item).strip() for item in normalized.get("amenities") or [] if str(item).strip()
+            ][:20]
+        clean_unsupported = [str(item).strip() for item in unsupported or [] if str(item).strip()]
+        try:
+            score = float(confidence if confidence is not None else 0.82)
+        except Exception:
+            score = 0.82
+        return normalized, clean_unsupported, max(0.0, min(score, 0.98))
 
     def parse_intent(self, prompt: str) -> Tuple[Dict[str, Any], List[str], float]:
         text = str(prompt or "").strip()
@@ -229,6 +420,7 @@ class SearchAssistService:
         patterns = [
             r"\b(?:in|near|around)\s+(.+?)(?:\s+(?:from|for|with|under|below|between|on|during|january|february|march|april|may|june|july|august|september|october|november|december)\b|$)",
             r"\b(?:search|find|look for|show me)\s+(?:.+?)\s+(?:in|near|around)\s+(.+?)(?:\s+(?:from|for|with|under|below|between|on|during)\b|$)",
+            r"^(.+?)\s+(?:from\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
         ]
         for pattern in patterns:
             match = re.search(pattern, text, flags=re.IGNORECASE)

@@ -1862,8 +1862,9 @@ class ClaudeSkillRuntime:
             "max_tokens": int(max_tokens or self.max_tokens),
             "system": str(system_prompt or self.default_system_prompt),
             "messages": messages,
-            "tools": tools,
         }
+        if tools:
+            body["tools"] = tools
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -1887,6 +1888,88 @@ class ClaudeSkillRuntime:
         if not isinstance(payload, dict):
             raise RuntimeError("claude_invalid_payload")
         return payload
+
+    def parse_search_assist_prompt(self, prompt: str) -> Dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("claude_api_key_missing")
+        text = str(prompt or "").strip()
+        if not text:
+            return {
+                "status": "clarification_needed",
+                "intent": {},
+                "message": "Describe the listing search you want to run.",
+                "unsupported_or_uncertain_requests": [],
+                "confidence": 0.0,
+            }
+        system_prompt = (
+            "You parse a single rental-listing search-bar prompt into a JSON object. "
+            "This workflow is constrained to Airbnb-style listing searches only. "
+            "Do not answer conversationally. Return JSON only, with no markdown. "
+            "Schema: {\"status\":\"ready|clarification_needed|rejected\","
+            "\"intent\":{\"location\":string,\"check_in\":YYYY-MM-DD,\"check_out\":YYYY-MM-DD,"
+            "\"adults\":int,\"children\":int,\"infants\":int,\"pets\":int,"
+            "\"min_price\":int,\"max_price\":int,\"room_type\":string,"
+            "\"amenities\":[string],\"flexible_cancellation\":bool,"
+            "\"min_bedrooms\":int,\"min_beds\":int,\"min_bathrooms\":int},"
+            "\"message\":string,\"unsupported_or_uncertain_requests\":[string],\"confidence\":number}. "
+            "Use status rejected for unrelated prompts, analysis/comparison requests, ingestion/capture requests, "
+            "or prompts that are not asking to find rentals. "
+            "Use clarification_needed when the prompt is search-related but missing a destination or has impossible dates. "
+            "For destination-first prompts like 'Phoenicia July 18-25', set location to 'Phoenicia'. "
+            "Do not invent dates. If year is omitted, use the current year unless that date range has already passed; "
+            "then use next year. Current date: 2026-05-31. "
+            "Default adults to 1 and children/infants/pets to 0 only when a search is otherwise valid. "
+            "Keep amenities as plain labels such as 'hot tub' or 'wifi'."
+        )
+        response = self._call_claude(
+            messages=[{"role": "user", "content": [{"type": "text", "text": text}]}],
+            tools=[],
+            system_prompt=system_prompt,
+            max_tokens=700,
+        )
+        raw = self._extract_text_from_claude_response(response)
+        payload = self._parse_json_object(raw)
+        if not isinstance(payload, dict):
+            raise RuntimeError("claude_search_assist_invalid_json")
+        status = str(payload.get("status") or "").strip().lower()
+        if status not in {"ready", "clarification_needed", "rejected"}:
+            payload["status"] = "clarification_needed"
+            payload["message"] = "I could not confidently parse that as a listing search."
+        if not isinstance(payload.get("intent"), dict):
+            payload["intent"] = {}
+        if not isinstance(payload.get("unsupported_or_uncertain_requests"), list):
+            payload["unsupported_or_uncertain_requests"] = []
+        return payload
+
+    def _extract_text_from_claude_response(self, response: Dict[str, Any]) -> str:
+        blocks = response.get("content") if isinstance(response.get("content"), list) else []
+        text_blocks = [
+            str(block.get("text") or "").strip()
+            for block in blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join([item for item in text_blocks if item]).strip()
+
+    def _parse_json_object(self, raw: str) -> Optional[Dict[str, Any]]:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text).strip()
+        try:
+            payload = json.loads(text)
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            pass
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(0))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
 
 
 class ClaudeAgentSdkRuntime(ClaudeSkillRuntime):
@@ -2813,17 +2896,43 @@ class AgentChatRuntime:
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         queue: bool = True,
+        location_override: Optional[str] = None,
     ) -> Dict[str, Any]:
-        result = self.search_assist_service.assist(prompt, queue=queue)
+        parse_payload: Dict[str, Any] = {}
+        warnings: List[str] = []
+        assist_runtime = str(os.getenv("RENTAL_SEARCH_ASSIST_RUNTIME", "claude") or "claude").strip().lower()
+        use_claude = assist_runtime in {"claude", "llm", "model"} and bool(self.claude.api_key)
+        if use_claude:
+            try:
+                parse_payload = self.claude.parse_search_assist_prompt(prompt)
+            except Exception as exc:
+                parse_payload = {}
+                warnings.append("search_assist_claude_parse_failed")
+                warnings.append(f"search_assist_claude_parse_error:{_text_snippet(exc, limit=180)}")
+        result = self.search_assist_service.assist(
+            prompt,
+            queue=queue,
+            parsed_intent=parse_payload.get("intent") if isinstance(parse_payload.get("intent"), dict) else None,
+            parsed_status=parse_payload.get("status"),
+            parsed_message=parse_payload.get("message"),
+            parsed_unsupported=parse_payload.get("unsupported_or_uncertain_requests")
+            if isinstance(parse_payload.get("unsupported_or_uncertain_requests"), list)
+            else None,
+            parsed_confidence=parse_payload.get("confidence"),
+            location_override=location_override,
+        )
         debug = result.get("debug") if isinstance(result.get("debug"), dict) else {}
         debug.update(
             {
-                "runtime": "deterministic_search_assist",
+                "runtime": "claude_search_assist" if parse_payload else "deterministic_search_assist",
                 "session_id": session_id,
                 "user_id": user_id,
                 "tool_allowlist": ["tool.search_create"],
+                "warnings": warnings,
             }
         )
+        if parse_payload:
+            debug["model_status"] = parse_payload.get("status")
         result["debug"] = debug
         return result
 

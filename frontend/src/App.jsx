@@ -951,15 +951,15 @@ export default function App() {
     }
   }
 
-  const submitAiSearch = async (event) => {
-    event?.preventDefault()
-    const prompt = aiSearchPrompt.trim()
+  const runAiSearchAssist = async ({ prompt, locationOverride = null }) => {
     if (!prompt) {
       toast.error('Describe the listing search you want to run.')
       return
     }
     setAiSearchSubmitting(true)
-    setAiSearchResult(null)
+    if (!locationOverride) {
+      setAiSearchResult(null)
+    }
     try {
       const response = await requestJson('/api/v1/agent/search-assist', {
         method: 'POST',
@@ -968,6 +968,7 @@ export default function App() {
           prompt,
           session_id: 'main-ai-search',
           queue: true,
+          ...(locationOverride ? { location_override: locationOverride } : {}),
         }),
       })
       setAiSearchResult(response)
@@ -978,12 +979,29 @@ export default function App() {
         refreshRuns()
         return
       }
+      if (response.status === 'rejected') {
+        toast.error(response.message || 'This bar only runs rental listing searches.')
+        return
+      }
       toast.message(response.message || 'Search needs clarification.')
     } catch (err) {
       toast.error(`AI search failed: ${err.message}`)
     } finally {
       setAiSearchSubmitting(false)
     }
+  }
+
+  const submitAiSearch = async (event) => {
+    event?.preventDefault()
+    const prompt = aiSearchPrompt.trim()
+    await runAiSearchAssist({ prompt })
+  }
+
+  const confirmAiSearchLocation = async (candidate) => {
+    const label = candidate?.label
+    if (!label) return
+    const prompt = aiSearchPrompt.trim() || aiSearchResult?.original_prompt || ''
+    await runAiSearchAssist({ prompt, locationOverride: label })
   }
 
   const submitUrls = async () => {
@@ -2485,6 +2503,28 @@ export default function App() {
                 ))}
               </div>
             )}
+            {aiSearchResult?.status === 'clarification_needed' &&
+              aiSearchResult?.location_candidates?.length > 0 && (
+                <div className="mt-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+                  <p className="text-sm font-medium">
+                    {aiSearchResult.clarification_question || 'Choose a location to run the search.'}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {aiSearchResult.location_candidates.slice(0, 5).map((candidate) => (
+                      <Button
+                        key={candidate.label}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => confirmAiSearchLocation(candidate)}
+                        disabled={aiSearchSubmitting}
+                      >
+                        {candidate.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
           </form>
 
           <div className="flex flex-wrap items-center justify-between gap-3">

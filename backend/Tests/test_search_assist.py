@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -25,9 +26,10 @@ class SearchAssistTests(unittest.TestCase):
     def test_parse_and_queue_rich_search_prompt(self) -> None:
         storage = _Storage()
         service = SearchAssistService(storage)
-        result = service.assist(
-            "Cabin near Phoenicia July 18-25, 2026 for 2 adults and 1 dog with wifi and parking under $500"
-        )
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist(
+                "Cabin near Phoenicia July 18-25, 2026 for 2 adults and 1 dog with wifi and parking under $500"
+            )
         self.assertEqual(result.get("status"), "queued")
         self.assertEqual(len(storage.jobs), 1)
         _, payload = storage.jobs[0]
@@ -43,9 +45,73 @@ class SearchAssistTests(unittest.TestCase):
     def test_invalid_prompt_does_not_queue(self) -> None:
         storage = _Storage()
         service = SearchAssistService(storage)
-        result = service.assist("Something quiet with a hot tub")
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist("Something quiet with a hot tub")
         self.assertEqual(result.get("status"), "clarification_needed")
         self.assertEqual(storage.jobs, [])
+
+    def test_destination_first_prompt_parses_location(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist("Phoenicia July 18-25, 2026, 4 adults, dog friendly")
+        self.assertEqual(result.get("status"), "queued")
+        _, payload = storage.jobs[0]
+        self.assertEqual(payload.get("location"), "Phoenicia")
+        self.assertEqual(payload.get("check_in"), "2026-07-18")
+        self.assertEqual(payload.get("check_out"), "2026-07-25")
+        self.assertEqual(payload.get("adults"), 4)
+        self.assertEqual(payload.get("pets"), 1)
+
+    def test_geoapify_auto_selects_unambiguous_location(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        suggestions = [
+            {
+                "label": "Phoenicia, NY, United States",
+                "city": "Phoenicia",
+                "state": "New York",
+                "country": "United States",
+                "lat": 42.083,
+                "lng": -74.315,
+                "type": "city",
+            }
+        ]
+        with patch("services.search_assist.suggest_locations", return_value=suggestions):
+            result = service.assist("Phoenicia July 18-25, 2026")
+        self.assertEqual(result.get("status"), "queued")
+        _, payload = storage.jobs[0]
+        self.assertEqual(payload.get("location"), "Phoenicia, NY, United States")
+        self.assertTrue((payload.get("location_resolution") or {}).get("auto_selected"))
+
+    def test_geoapify_ambiguous_location_requests_confirmation(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        suggestions = [
+            {"label": "Springfield, IL, United States", "city": "Springfield", "state": "Illinois"},
+            {"label": "Springfield, MA, United States", "city": "Springfield", "state": "Massachusetts"},
+        ]
+        with patch("services.search_assist.suggest_locations", return_value=suggestions):
+            result = service.assist("Springfield July 18-25, 2026")
+        self.assertEqual(result.get("status"), "clarification_needed")
+        self.assertEqual(storage.jobs, [])
+        self.assertEqual(len(result.get("location_candidates") or []), 2)
+
+    def test_location_override_queues_confirmed_candidate(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        suggestions = [
+            {"label": "Springfield, IL, United States", "city": "Springfield", "state": "Illinois"},
+            {"label": "Springfield, MA, United States", "city": "Springfield", "state": "Massachusetts"},
+        ]
+        with patch("services.search_assist.suggest_locations", return_value=suggestions):
+            result = service.assist(
+                "Springfield July 18-25, 2026",
+                location_override="Springfield, MA, United States",
+            )
+        self.assertEqual(result.get("status"), "queued")
+        _, payload = storage.jobs[0]
+        self.assertEqual(payload.get("location"), "Springfield, MA, United States")
 
     def test_search_url_includes_extended_filters(self) -> None:
         url = build_airbnb_search_url(

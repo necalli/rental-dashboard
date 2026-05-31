@@ -588,6 +588,7 @@ def agent_search_assist():
         return jsonify({"error": "prompt is required"}), 400
     session_id = payload.get("session_id")
     user_id = payload.get("user_id")
+    location_override = payload.get("location_override")
     queue = payload.get("queue")
     if queue is None:
         queue = True
@@ -597,6 +598,7 @@ def agent_search_assist():
             prompt=prompt,
             user_id=user_id,
             queue=_to_bool(queue, True),
+            location_override=str(location_override).strip() if location_override else None,
         )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
