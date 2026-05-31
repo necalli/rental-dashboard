@@ -113,6 +113,22 @@ class SearchAssistTests(unittest.TestCase):
         _, payload = storage.jobs[0]
         self.assertEqual(payload.get("location"), "Springfield, MA, United States")
 
+    def test_external_model_soft_preferences_are_preserved(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist(
+                "Find a secluded cabin near Phoenicia",
+                parsed_intent={"location": "Phoenicia", "adults": 2},
+                parsed_status="ready",
+                parsed_soft_preferences=["secluded", "cabin"],
+                parsed_confidence=0.9,
+            )
+        self.assertEqual(result.get("status"), "queued")
+        self.assertEqual(result.get("soft_preferences"), ["secluded", "cabin"])
+        _, payload = storage.jobs[0]
+        self.assertEqual(payload.get("soft_preferences"), ["secluded", "cabin"])
+
     def test_search_url_includes_safe_extended_filters(self) -> None:
         url = build_airbnb_search_url(
             {

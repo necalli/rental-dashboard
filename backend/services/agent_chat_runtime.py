@@ -1901,25 +1901,13 @@ class ClaudeSkillRuntime:
                 "unsupported_or_uncertain_requests": [],
                 "confidence": 0.0,
             }
+        skill_instruction = self._search_assist_skill_instruction()
+        current_date = time.strftime("%Y-%m-%d")
         system_prompt = (
-            "You parse a single rental-listing search-bar prompt into a JSON object. "
-            "This workflow is constrained to Airbnb-style listing searches only. "
-            "Do not answer conversationally. Return JSON only, with no markdown. "
-            "Schema: {\"status\":\"ready|clarification_needed|rejected\","
-            "\"intent\":{\"location\":string,\"check_in\":YYYY-MM-DD,\"check_out\":YYYY-MM-DD,"
-            "\"adults\":int,\"children\":int,\"infants\":int,\"pets\":int,"
-            "\"min_price\":int,\"max_price\":int,\"room_type\":string,"
-            "\"amenities\":[string],\"flexible_cancellation\":bool,"
-            "\"min_bedrooms\":int,\"min_beds\":int,\"min_bathrooms\":int},"
-            "\"message\":string,\"unsupported_or_uncertain_requests\":[string],\"confidence\":number}. "
-            "Use status rejected for unrelated prompts, analysis/comparison requests, ingestion/capture requests, "
-            "or prompts that are not asking to find rentals. "
-            "Use clarification_needed when the prompt is search-related but missing a destination or has impossible dates. "
-            "For destination-first prompts like 'Phoenicia July 18-25', set location to 'Phoenicia'. "
-            "Do not invent dates. If year is omitted, use the current year unless that date range has already passed; "
-            "then use next year. Current date: 2026-05-31. "
-            "Default adults to 1 and children/infants/pets to 0 only when a search is otherwise valid. "
-            "Keep amenities as plain labels such as 'hot tub' or 'wifi'."
+            "Use the following skill instructions to parse one constrained AI listing search-bar prompt. "
+            f"Current date: {current_date}. "
+            "Return JSON only, with no markdown or extra prose.\n\n"
+            f"{skill_instruction}"
         )
         response = self._call_claude(
             messages=[{"role": "user", "content": [{"type": "text", "text": text}]}],
@@ -1939,7 +1927,21 @@ class ClaudeSkillRuntime:
             payload["intent"] = {}
         if not isinstance(payload.get("unsupported_or_uncertain_requests"), list):
             payload["unsupported_or_uncertain_requests"] = []
+        if not isinstance(payload.get("soft_preferences"), list):
+            payload["soft_preferences"] = []
         return payload
+
+    def _search_assist_skill_instruction(self) -> str:
+        for skill in self.skills:
+            if str(skill.get("skill_id") or "").strip() == "mvp_ai_listing_search_assist":
+                instruction = str(skill.get("instruction") or "").strip()
+                if instruction:
+                    return instruction
+        return (
+            "Convert a rental listing search-bar prompt into JSON with status, intent, "
+            "soft_preferences, unsupported_or_uncertain_requests, message, and confidence. "
+            "Use rejected for non-search prompts and clarification_needed for missing destinations."
+        )
 
     def _extract_text_from_claude_response(self, response: Dict[str, Any]) -> str:
         blocks = response.get("content") if isinstance(response.get("content"), list) else []
@@ -2917,6 +2919,9 @@ class AgentChatRuntime:
             parsed_message=parse_payload.get("message"),
             parsed_unsupported=parse_payload.get("unsupported_or_uncertain_requests")
             if isinstance(parse_payload.get("unsupported_or_uncertain_requests"), list)
+            else None,
+            parsed_soft_preferences=parse_payload.get("soft_preferences")
+            if isinstance(parse_payload.get("soft_preferences"), list)
             else None,
             parsed_confidence=parse_payload.get("confidence"),
             location_override=location_override,

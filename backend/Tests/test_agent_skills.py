@@ -19,6 +19,7 @@ class AgentSkillsTests(unittest.TestCase):
         self.assertIn("mvp_pipeline_observability", ids)
         self.assertIn("mvp_listing_analysis", ids)
         self.assertIn("mvp_trip_research", ids)
+        self.assertIn("mvp_ai_listing_search_assist", ids)
         self.assertIn("future_personality_rag", ids)
 
     def test_enabled_tool_names_includes_personality_rag_tools(self):
@@ -45,6 +46,16 @@ class AgentSkillsTests(unittest.TestCase):
         self.assertIn("tool.search_ingest_listings", tools)
         frontmatter = search_skill.get("raw_frontmatter") if isinstance(search_skill.get("raw_frontmatter"), dict) else {}
         self.assertNotIn("tools", frontmatter)
+
+    def test_ai_search_assist_skill_is_available_but_not_chat_enabled(self):
+        skills = load_skill_packages("backend/agent_skills")
+        by_id = {str(item.get("skill_id")): item for item in skills}
+        skill = by_id.get("mvp_ai_listing_search_assist") or {}
+        self.assertFalse(bool(skill.get("enabled")))
+        self.assertEqual((skill.get("runtime") or {}).get("surface"), "search_assist")
+        self.assertIn("soft_preferences", str(skill.get("instruction") or ""))
+        prompt = skill_system_prompt(skills)
+        self.assertNotIn("Skill: AI Listing Search Assist", prompt)
 
     def test_select_skills_for_message_scopes_pipeline_prompt(self):
         skills = load_skill_packages("backend/agent_skills")

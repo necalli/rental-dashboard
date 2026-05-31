@@ -820,6 +820,37 @@ class AgentChatRuntimeTests(unittest.TestCase):
         self.assertIn("search_job_id_promoted_to_run_id", warnings)
         self.assertIn(f"/api/v1/jobs/{search_job_id}", citations)
 
+    def test_search_assist_prompt_uses_dedicated_skill_instruction(self):
+        os.environ["RENTAL_CLAUDE_API_KEY"] = "test-key"
+        runtime = ClaudeSkillRuntime(orchestrator=AgentChatRuntime(storage=FakeStorage()).local)
+        captured = {}
+
+        def fake_call_claude(**kwargs):
+            captured["system_prompt"] = kwargs.get("system_prompt")
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            '{"status":"ready","intent":{"location":"Phoenicia","adults":4,'
+                            '"children":0,"infants":0,"pets":1,"amenities":["hot tub"]},'
+                            '"soft_preferences":["cabin"],'
+                            '"unsupported_or_uncertain_requests":[],"message":"ready",'
+                            '"confidence":0.9}'
+                        ),
+                    }
+                ]
+            }
+
+        runtime._call_claude = fake_call_claude  # type: ignore[method-assign]
+        payload = runtime.parse_search_assist_prompt("Find a pet-friendly cabin near Phoenicia")
+
+        self.assertEqual(payload.get("status"), "ready")
+        self.assertEqual(payload.get("soft_preferences"), ["cabin"])
+        system_prompt = str(captured.get("system_prompt") or "")
+        self.assertIn("soft_preferences", system_prompt)
+        self.assertIn("Do not silently drop user preferences", system_prompt)
+
     def test_background_latest_run_id_reused_when_missing(self):
         os.environ["RENTAL_CLAUDE_API_KEY"] = "test-key"
         runtime = ClaudeSkillRuntime(orchestrator=AgentChatRuntime(storage=FakeStorage()).local)

@@ -1,0 +1,17 @@
+{
+  "enabled": false,
+  "phase": "mvp",
+  "placeholder": false,
+  "surface": "search_assist",
+  "tools": [
+    "tool.search_create"
+  ],
+  "trigger_keywords": [
+    "ai search",
+    "search assist",
+    "search bar",
+    "natural language search",
+    "find rentals",
+    "find listings"
+  ]
+}

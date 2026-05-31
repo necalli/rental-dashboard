@@ -84,6 +84,7 @@ class SearchAssistResult:
     message: str
     job: Optional[Dict[str, Any]] = None
     unsupported_or_uncertain_requests: Optional[List[str]] = None
+    soft_preferences: Optional[List[str]] = None
     location_candidates: Optional[List[Dict[str, Any]]] = None
     clarification_question: Optional[str] = None
     confidence: float = 0.0
@@ -94,6 +95,7 @@ class SearchAssistResult:
             "intent": self.intent,
             "message": self.message,
             "unsupported_or_uncertain_requests": self.unsupported_or_uncertain_requests or [],
+            "soft_preferences": self.soft_preferences or [],
             "confidence": round(float(self.confidence), 3),
         }
         if self.job is not None:
@@ -118,18 +120,21 @@ class SearchAssistService:
         parsed_status: Optional[str] = None,
         parsed_message: Optional[str] = None,
         parsed_unsupported: Optional[List[str]] = None,
+        parsed_soft_preferences: Optional[List[str]] = None,
         parsed_confidence: Optional[float] = None,
         location_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         text = str(prompt or "").strip()
         if isinstance(parsed_intent, dict):
-            intent, unsupported, confidence = self._normalize_external_intent(
+            intent, unsupported, soft_preferences, confidence = self._normalize_external_intent(
                 parsed_intent,
                 parsed_unsupported or [],
+                parsed_soft_preferences or [],
                 parsed_confidence,
             )
         else:
             intent, unsupported, confidence = self.parse_intent(text)
+            soft_preferences = []
         status_hint = str(parsed_status or "").strip().lower()
         if status_hint == "rejected":
             return SearchAssistResult(
@@ -137,6 +142,7 @@ class SearchAssistService:
                 intent=intent,
                 message=parsed_message or "This search bar only runs rental listing searches.",
                 unsupported_or_uncertain_requests=unsupported,
+                soft_preferences=soft_preferences,
                 confidence=min(confidence, 0.45),
             ).as_dict()
         if location_override:
@@ -156,6 +162,7 @@ class SearchAssistService:
                     message=location_resolution.get("message")
                     or "Please confirm which location you want to search.",
                     unsupported_or_uncertain_requests=unsupported,
+                    soft_preferences=soft_preferences,
                     location_candidates=location_resolution.get("candidates") or [],
                     clarification_question=location_resolution.get("question"),
                     confidence=min(confidence, 0.7),
@@ -174,6 +181,7 @@ class SearchAssistService:
                 intent=intent,
                 message=parsed_message if status_hint == "clarification_needed" and parsed_message else validation["error"],
                 unsupported_or_uncertain_requests=unsupported,
+                soft_preferences=soft_preferences,
                 clarification_question=parsed_message if status_hint == "clarification_needed" else None,
                 confidence=min(confidence, 0.45),
             ).as_dict()
@@ -183,8 +191,11 @@ class SearchAssistService:
                 intent=intent,
                 message="Search intent parsed and ready to queue.",
                 unsupported_or_uncertain_requests=unsupported,
+                soft_preferences=soft_preferences,
                 confidence=confidence,
             ).as_dict()
+        if soft_preferences:
+            intent["soft_preferences"] = soft_preferences
         job = self.storage.create_job("search", intent)
         return SearchAssistResult(
             status="queued",
@@ -192,6 +203,7 @@ class SearchAssistService:
             message=self._queued_message(intent),
             job=job,
             unsupported_or_uncertain_requests=unsupported,
+            soft_preferences=soft_preferences,
             confidence=confidence,
         ).as_dict()
 
@@ -296,8 +308,9 @@ class SearchAssistService:
         self,
         intent: Dict[str, Any],
         unsupported: List[str],
+        soft_preferences: List[str],
         confidence: Optional[float],
-    ) -> Tuple[Dict[str, Any], List[str], float]:
+    ) -> Tuple[Dict[str, Any], List[str], List[str], float]:
         normalized: Dict[str, Any] = {}
         allowed = {
             "location",
@@ -329,11 +342,13 @@ class SearchAssistService:
                 str(item).strip() for item in normalized.get("amenities") or [] if str(item).strip()
             ][:20]
         clean_unsupported = [str(item).strip() for item in unsupported or [] if str(item).strip()]
+        clean_soft = [str(item).strip() for item in soft_preferences or [] if str(item).strip()]
+        clean_soft = list(dict.fromkeys(clean_soft))[:20]
         try:
             score = float(confidence if confidence is not None else 0.82)
         except Exception:
             score = 0.82
-        return normalized, clean_unsupported, max(0.0, min(score, 0.98))
+        return normalized, clean_unsupported, clean_soft, max(0.0, min(score, 0.98))
 
     def parse_intent(self, prompt: str) -> Tuple[Dict[str, Any], List[str], float]:
         text = str(prompt or "").strip()
