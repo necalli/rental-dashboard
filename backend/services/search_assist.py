@@ -135,6 +135,7 @@ class SearchAssistService:
         else:
             intent, unsupported, confidence = self.parse_intent(text)
             soft_preferences = []
+            self._normalize_price_basis(intent, clean_notes=unsupported)
         status_hint = str(parsed_status or "").strip().lower()
         if status_hint == "rejected":
             return SearchAssistResult(
@@ -322,6 +323,11 @@ class SearchAssistService:
             "pets",
             "min_price",
             "max_price",
+            "min_price_nightly",
+            "max_price_nightly",
+            "min_price_total",
+            "max_price_total",
+            "price_basis",
             "room_type",
             "amenities",
             "flexible_cancellation",
@@ -341,6 +347,7 @@ class SearchAssistService:
             normalized["amenities"] = [
                 str(item).strip() for item in normalized.get("amenities") or [] if str(item).strip()
             ][:20]
+        self._normalize_price_basis(normalized, clean_notes=unsupported)
         clean_unsupported = [str(item).strip() for item in unsupported or [] if str(item).strip()]
         clean_soft = [str(item).strip() for item in soft_preferences or [] if str(item).strip()]
         clean_soft = list(dict.fromkeys(clean_soft))[:20]
@@ -412,6 +419,49 @@ class SearchAssistService:
         unsupported.extend(custom_requests)
 
         return intent, unsupported, min(confidence, 0.95)
+
+    def _normalize_price_basis(self, intent: Dict[str, Any], *, clean_notes: List[str]) -> None:
+        check_in = intent.get("check_in")
+        check_out = intent.get("check_out")
+        nights = self._compute_nights(check_in, check_out)
+        basis = str(intent.get("price_basis") or "").strip().lower()
+
+        max_total = self._to_positive_int(intent.get("max_price_total"))
+        min_total = self._to_positive_int(intent.get("min_price_total"))
+        max_nightly = self._to_positive_int(intent.get("max_price_nightly"))
+        min_nightly = self._to_positive_int(intent.get("min_price_nightly"))
+
+        if max_total is not None:
+            intent["max_price"] = max_total
+            basis = "total"
+        elif max_nightly is not None:
+            intent["max_price"] = max_nightly * nights
+            basis = "nightly"
+
+        if min_total is not None:
+            intent["min_price"] = min_total
+            basis = "total"
+        elif min_nightly is not None:
+            intent["min_price"] = min_nightly * nights
+            basis = "nightly"
+
+        if basis in {"nightly", "total"}:
+            intent["price_basis"] = basis
+        if max_nightly is not None or min_nightly is not None or max_total is not None or min_total is not None:
+            intent["price_filter"] = {
+                "basis": intent.get("price_basis") or basis or "unknown",
+                "nights": nights,
+                "input_min_nightly": min_nightly,
+                "input_max_nightly": max_nightly,
+                "input_min_total": min_total,
+                "input_max_total": max_total,
+                "derived_min_total": intent.get("min_price"),
+                "derived_max_total": intent.get("max_price"),
+            }
+        if str(intent.get("price_basis") or "").strip().lower() == "unknown":
+            clean_notes.append("Price basis was unclear; confirm whether the amount is nightly or total if results look too broad or narrow.")
+        if str(intent.get("price_basis_assumed") or "").strip().lower() == "nightly":
+            clean_notes.append("Price amount was assumed to be nightly; say total if you mean a total stay budget.")
 
     def validate_intent(self, prompt: str, intent: Dict[str, Any]) -> Dict[str, Any]:
         if not str(prompt or "").strip():
@@ -507,21 +557,69 @@ class SearchAssistService:
             out["pets"] = max(1, min(int(pet_match.group(1)), 10)) if pet_match else 1
         return out
 
-    def _extract_prices(self, lowered: str) -> Dict[str, int]:
-        out: Dict[str, int] = {}
+    def _extract_prices(self, lowered: str) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
         under = re.search(r"\b(?:under|below|less than|max(?:imum)?)\s*\$?([0-9][0-9,]*)", lowered)
         if under:
-            out["max_price"] = int(under.group(1).replace(",", ""))
+            value = int(under.group(1).replace(",", ""))
+            if self._mentions_total_price(lowered):
+                out["max_price_total"] = value
+                out["price_basis"] = "total"
+            else:
+                out["max_price_nightly"] = value
+                out["price_basis"] = "nightly"
+                if not self._mentions_nightly_price(lowered):
+                    out["price_basis_assumed"] = "nightly"
         over = re.search(r"\b(?:over|above|min(?:imum)?)\s*\$?([0-9][0-9,]*)", lowered)
         if over:
-            out["min_price"] = int(over.group(1).replace(",", ""))
+            value = int(over.group(1).replace(",", ""))
+            if self._mentions_total_price(lowered):
+                out["min_price_total"] = value
+                out["price_basis"] = "total"
+            else:
+                out["min_price_nightly"] = value
+                out["price_basis"] = "nightly"
+                if not self._mentions_nightly_price(lowered):
+                    out["price_basis_assumed"] = "nightly"
         between = re.search(r"\bbetween\s*\$?([0-9][0-9,]*)\s*(?:and|-|to)\s*\$?([0-9][0-9,]*)", lowered)
         if between:
             first = int(between.group(1).replace(",", ""))
             second = int(between.group(2).replace(",", ""))
-            out["min_price"] = min(first, second)
-            out["max_price"] = max(first, second)
+            if self._mentions_total_price(lowered):
+                out["min_price_total"] = min(first, second)
+                out["max_price_total"] = max(first, second)
+                out["price_basis"] = "total"
+            else:
+                out["min_price_nightly"] = min(first, second)
+                out["max_price_nightly"] = max(first, second)
+                out["price_basis"] = "nightly"
+                if not self._mentions_nightly_price(lowered):
+                    out["price_basis_assumed"] = "nightly"
         return out
+
+    def _mentions_nightly_price(self, lowered: str) -> bool:
+        return bool(re.search(r"\b(per\s+night|nightly|/night|a\s+night|per\s+nite)\b", lowered))
+
+    def _mentions_total_price(self, lowered: str) -> bool:
+        return bool(re.search(r"\b(total|all[-\s]?in|for\s+the\s+(?:stay|week|trip)|whole\s+(?:stay|week|trip))\b", lowered))
+
+    def _compute_nights(self, check_in: Any, check_out: Any) -> int:
+        try:
+            start = time.strptime(str(check_in), "%Y-%m-%d")
+            end = time.strptime(str(check_out), "%Y-%m-%d")
+            nights = int((time.mktime(end) - time.mktime(start)) / 86400)
+            return max(1, nights)
+        except Exception:
+            return 1
+
+    def _to_positive_int(self, value: Any) -> Optional[int]:
+        try:
+            if value in (None, "", []):
+                return None
+            parsed = int(float(value))
+            return parsed if parsed > 0 else None
+        except Exception:
+            return None
 
     def _extract_room_type(self, lowered: str) -> Optional[str]:
         for needle, value in ROOM_TYPES.items():

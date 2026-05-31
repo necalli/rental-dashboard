@@ -38,9 +38,12 @@ class SearchAssistTests(unittest.TestCase):
         self.assertEqual(payload.get("check_out"), "2026-07-25")
         self.assertEqual(payload.get("adults"), 2)
         self.assertEqual(payload.get("pets"), 1)
-        self.assertEqual(payload.get("max_price"), 500)
+        self.assertEqual(payload.get("max_price_nightly"), 500)
+        self.assertEqual(payload.get("max_price"), 3500)
+        self.assertEqual((payload.get("price_filter") or {}).get("basis"), "nightly")
         self.assertIn("wifi", payload.get("amenities") or [])
         self.assertIn("free parking", payload.get("amenities") or [])
+        self.assertIn("nightly", " ".join(result.get("unsupported_or_uncertain_requests") or []))
 
     def test_invalid_prompt_does_not_queue(self) -> None:
         storage = _Storage()
@@ -118,8 +121,15 @@ class SearchAssistTests(unittest.TestCase):
         service = SearchAssistService(storage)
         with patch("services.search_assist.suggest_locations", return_value=[]):
             result = service.assist(
-                "Find a secluded cabin near Phoenicia",
-                parsed_intent={"location": "Phoenicia", "adults": 2},
+                "Find a secluded cabin near Phoenicia July 18-25 under $400 per night",
+                parsed_intent={
+                    "location": "Phoenicia",
+                    "check_in": "2026-07-18",
+                    "check_out": "2026-07-25",
+                    "adults": 2,
+                    "max_price_nightly": 400,
+                    "price_basis": "nightly",
+                },
                 parsed_status="ready",
                 parsed_soft_preferences=["secluded", "cabin"],
                 parsed_confidence=0.9,
@@ -128,6 +138,8 @@ class SearchAssistTests(unittest.TestCase):
         self.assertEqual(result.get("soft_preferences"), ["secluded", "cabin"])
         _, payload = storage.jobs[0]
         self.assertEqual(payload.get("soft_preferences"), ["secluded", "cabin"])
+        self.assertEqual(payload.get("max_price"), 2800)
+        self.assertEqual((payload.get("price_filter") or {}).get("input_max_nightly"), 400)
 
     def test_search_url_includes_safe_extended_filters(self) -> None:
         url = build_airbnb_search_url(
@@ -156,6 +168,19 @@ class SearchAssistTests(unittest.TestCase):
         self.assertIn("min_beds=3", url)
         self.assertIn("min_bathrooms=2", url)
         self.assertIn("flexible_cancellation=true", url)
+
+    def test_search_url_converts_nightly_price_to_total_cap(self) -> None:
+        url = build_airbnb_search_url(
+            {
+                "location": "Phoenicia, NY",
+                "check_in": "2026-07-18",
+                "check_out": "2026-07-25",
+                "max_price_nightly": 400,
+            }
+        )
+        self.assertIn("price_max=2800", url)
+        self.assertIn("price_filter_num_nights=7", url)
+        self.assertIn("selected_filter_order%5B%5D=price_max%3A2800", url)
 
     @patch.dict("os.environ", {"RENTAL_SEARCH_ENABLE_TEXT_AMENITY_FILTERS": "true"})
     def test_search_url_can_opt_into_text_amenity_filters(self) -> None:

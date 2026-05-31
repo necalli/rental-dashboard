@@ -28,6 +28,31 @@ def _nights(check_in: Any, check_out: Any) -> int:
         return 1
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        if value in (None, "", []):
+            return None
+        parsed = int(float(value))
+        return parsed if parsed > 0 else None
+    except Exception:
+        return None
+
+
+def _price_bounds(params: Dict[str, Any]) -> tuple[int | None, int | None]:
+    nights = _nights(params.get("check_in"), params.get("check_out"))
+    min_total = _positive_int(params.get("min_price_total"))
+    max_total = _positive_int(params.get("max_price_total"))
+    min_nightly = _positive_int(params.get("min_price_nightly"))
+    max_nightly = _positive_int(params.get("max_price_nightly"))
+    min_price = min_total if min_total is not None else _positive_int(params.get("min_price"))
+    max_price = max_total if max_total is not None else _positive_int(params.get("max_price"))
+    if min_nightly is not None and min_total is None:
+        min_price = min_nightly * nights
+    if max_nightly is not None and max_total is None:
+        max_price = max_nightly * nights
+    return min_price, max_price
+
+
 def build_airbnb_search_url(params: Dict[str, Any]) -> str:
     location = (params.get("location") or "").strip()
     if not location:
@@ -58,14 +83,15 @@ def build_airbnb_search_url(params: Dict[str, Any]) -> str:
     if params.get("pets"):
         query["pets"] = params.get("pets")
         selected_filters.append(f"pets:{params.get('pets')}")
-    if params.get("min_price"):
-        query["price_min"] = params.get("min_price")
-        selected_filters.append(f"price_min:{params.get('min_price')}")
-    if params.get("max_price"):
-        query["price_max"] = params.get("max_price")
+    min_price, max_price = _price_bounds(params)
+    if min_price:
+        query["price_min"] = min_price
+        selected_filters.append(f"price_min:{min_price}")
+    if max_price:
+        query["price_max"] = max_price
         query["price_filter_input_type"] = "2"
         query["price_filter_num_nights"] = _nights(params.get("check_in"), params.get("check_out"))
-        selected_filters.append(f"price_max:{params.get('max_price')}")
+        selected_filters.append(f"price_max:{max_price}")
 
     room_type = params.get("room_type")
     if room_type in AIRBNB_ROOM_TYPES:

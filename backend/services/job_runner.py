@@ -1,5 +1,6 @@
 ﻿import logging
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -225,6 +226,84 @@ def _to_int(value: Any) -> Optional[int]:
         return int(value)
     except Exception:
         return None
+
+
+def _search_filter_diagnostics(payload: Dict[str, Any], *, listing_count: int) -> Dict[str, Any]:
+    applied: List[Dict[str, Any]] = []
+    not_applied: List[Dict[str, Any]] = []
+    notes: List[str] = []
+
+    def add_applied(key: str, value: Any, label: str) -> None:
+        if value not in (None, "", [], {}):
+            applied.append({"key": key, "value": value, "label": label})
+
+    add_applied("location", payload.get("location"), "Destination")
+    add_applied("check_in", payload.get("check_in"), "Check-in")
+    add_applied("check_out", payload.get("check_out"), "Check-out")
+    add_applied("adults", payload.get("adults"), "Adults")
+    add_applied("children", payload.get("children"), "Children")
+    add_applied("infants", payload.get("infants"), "Infants")
+    add_applied("pets", payload.get("pets"), "Pets")
+    add_applied("min_bedrooms", payload.get("min_bedrooms"), "Minimum bedrooms")
+    add_applied("min_beds", payload.get("min_beds"), "Minimum beds")
+    add_applied("min_bathrooms", payload.get("min_bathrooms"), "Minimum bathrooms")
+    add_applied("room_type", payload.get("room_type"), "Room type")
+    if payload.get("min_price") or payload.get("max_price"):
+        applied.append(
+            {
+                "key": "price",
+                "value": {
+                    "min_price": payload.get("min_price"),
+                    "max_price": payload.get("max_price"),
+                    "price_filter": payload.get("price_filter"),
+                },
+                "label": "Price",
+            }
+        )
+
+    amenities = payload.get("amenities") if isinstance(payload.get("amenities"), list) else []
+    if amenities:
+        amenity_filters_enabled = str(
+            os.getenv("RENTAL_SEARCH_ENABLE_TEXT_AMENITY_FILTERS", "") or ""
+        ).strip().lower() in {"1", "true", "yes", "y", "on"}
+        if amenity_filters_enabled:
+            add_applied("amenities", amenities, "Amenities")
+        else:
+            not_applied.append(
+                {
+                    "key": "amenities",
+                    "value": amenities,
+                    "reason": "Text amenity URL filters are disabled; amenities are retained for later review/ranking.",
+                }
+            )
+    soft_preferences = payload.get("soft_preferences") if isinstance(payload.get("soft_preferences"), list) else []
+    if soft_preferences:
+        not_applied.append(
+            {
+                "key": "soft_preferences",
+                "value": soft_preferences,
+                "reason": "Soft preferences are not direct Airbnb URL filters.",
+            }
+        )
+    price_filter = payload.get("price_filter") if isinstance(payload.get("price_filter"), dict) else {}
+    if price_filter:
+        basis = price_filter.get("basis")
+        max_nightly = price_filter.get("input_max_nightly")
+        derived_max = price_filter.get("derived_max_total")
+        nights = price_filter.get("nights")
+        if basis == "nightly" and max_nightly and derived_max:
+            notes.append(
+                f"Nightly max price {max_nightly} was converted to total cap {derived_max} across {nights or 1} nights."
+            )
+    if listing_count <= 0 and applied:
+        notes.append(
+            "Search returned zero listings with the applied hard filters; try removing price, guest, pet, date, or bedroom constraints first."
+        )
+    return {
+        "applied_filters": applied,
+        "not_applied_filters": not_applied,
+        "notes": notes,
+    }
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -1004,12 +1083,14 @@ class JobRunner:
         job_metrics["parse_ms"] = _elapsed_ms(parse_started)
         if parser_meta:
             job_metrics["parser_drift"] = compact_parser_meta(parser_meta)
+        filter_diagnostics = _search_filter_diagnostics(payload, listing_count=len(normalized))
         result = {
             "search_url": capture.get("url"),
             "response_count": len(capture.get("responses", [])),
             "listing_count": len(normalized),
             "captured_at": _now_iso(),
             "parser_meta": parser_meta or {},
+            "filter_diagnostics": filter_diagnostics,
         }
         persist_started = time.monotonic()
         run_id = self.storage.add_search_run(payload, result, raw_ids)
@@ -1021,6 +1102,7 @@ class JobRunner:
             {
                 "run_id": run_id,
                 "listing_count": len(normalized),
+                "filter_diagnostics": filter_diagnostics,
             }
         )
         return job_metrics

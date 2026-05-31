@@ -20,6 +20,11 @@ Output schema:
     "pets": 0,
     "min_price": null,
     "max_price": null,
+    "min_price_nightly": null,
+    "max_price_nightly": null,
+    "min_price_total": null,
+    "max_price_total": null,
+    "price_basis": "nightly | total | unknown",
     "room_type": "string",
     "amenities": ["string"],
     "flexible_cancellation": false,
@@ -46,8 +51,13 @@ Rules:
 8. Put unsupported, vague, or uncertain requests in `unsupported_or_uncertain_requests`. Do not silently drop user preferences.
 9. Keep amenities as short lowercase labels, such as `hot tub`, `wifi`, `pool`, `kitchen`, `free parking`, `washer`, `dryer`, `air conditioning`, `fireplace`, `dedicated workspace`, `waterfront`, `beachfront`, `ev charger`, `crib`, or `gym`.
 10. Use room type only for Airbnb-supported place types: `Entire home/apt`, `Private room`, or `Shared room`. Treat property words like cabin, cottage, house, chalet, bungalow, or apartment as soft preferences unless the backend schema explicitly supports them.
-11. Mention in `message` which important preferences were not applied as hard filters.
-12. Keep `confidence` between `0` and `1`.
+11. For prices, preserve the user's basis:
+    - If the user says "per night", "nightly", "/night", or "a night", use `min_price_nightly` or `max_price_nightly` and set `price_basis` to `nightly`.
+    - If the user says "total", "all in", "for the stay", or "for the week", use `min_price_total` or `max_price_total` and set `price_basis` to `total`.
+    - If the user gives a price without a basis, assume nightly for search usefulness, use the nightly fields, set `price_basis` to `nightly`, and add a note to `unsupported_or_uncertain_requests` that nightly pricing was assumed.
+    - Do not put nightly values directly into `min_price` or `max_price`; those legacy fields are total-style URL caps.
+12. Mention in `message` which important preferences were not applied as hard filters and whether a price basis was assumed.
+13. Keep `confidence` between `0` and `1`.
 
 Examples:
 
@@ -67,7 +77,12 @@ Output:
     "infants": 0,
     "pets": 1,
     "min_price": null,
-    "max_price": 400,
+    "max_price": null,
+    "min_price_nightly": null,
+    "max_price_nightly": 400,
+    "min_price_total": null,
+    "max_price_total": null,
+    "price_basis": "nightly",
     "room_type": null,
     "amenities": ["hot tub", "wifi"],
     "flexible_cancellation": false,
@@ -77,7 +92,7 @@ Output:
   },
   "soft_preferences": ["cabin"],
   "unsupported_or_uncertain_requests": [],
-  "message": "I can search Phoenicia with dates, guests, pets, price, hot tub, and wifi. I will keep cabin as a preference.",
+  "message": "I can search Phoenicia with dates, guests, pets, nightly price, hot tub, and wifi. I will keep cabin as a preference.",
   "confidence": 0.9
 }
 ```
