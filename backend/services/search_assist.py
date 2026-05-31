@@ -210,10 +210,11 @@ class SearchAssistService:
             }
         auto = self._auto_select_location(raw, candidates)
         if auto:
+            resolved_label = self._search_label_for_location(raw, auto)
             return {
                 "source": "geoapify",
                 "input": raw,
-                "resolved_label": auto.get("label") or raw,
+                "resolved_label": resolved_label,
                 "selected_candidate": auto,
                 "candidate_count": len(candidates),
                 "auto_selected": True,
@@ -274,6 +275,17 @@ class SearchAssistService:
         if "," in raw:
             return candidates[0]
         return None
+
+    def _search_label_for_location(self, raw: str, candidate: Dict[str, Any]) -> str:
+        label = str(candidate.get("label") or raw).strip()
+        first = label.split(",", 1)[0].strip()
+        state = str(candidate.get("state") or "").strip()
+        country = str(candidate.get("country") or "").strip()
+        raw_has_region = "," in str(raw or "")
+        if first and state and not raw_has_region:
+            if country.lower() in {"", "united states", "united states of america", "usa"}:
+                return f"{first}, {state}"
+        return label or str(raw or "").strip()
 
     def _normalize_location_token(self, value: Any) -> str:
         text = str(value or "").strip().lower()

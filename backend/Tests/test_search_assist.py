@@ -81,7 +81,7 @@ class SearchAssistTests(unittest.TestCase):
             result = service.assist("Phoenicia July 18-25, 2026")
         self.assertEqual(result.get("status"), "queued")
         _, payload = storage.jobs[0]
-        self.assertEqual(payload.get("location"), "Phoenicia, NY, United States")
+        self.assertEqual(payload.get("location"), "Phoenicia, New York")
         self.assertTrue((payload.get("location_resolution") or {}).get("auto_selected"))
 
     def test_geoapify_ambiguous_location_requests_confirmation(self) -> None:
@@ -113,13 +113,13 @@ class SearchAssistTests(unittest.TestCase):
         _, payload = storage.jobs[0]
         self.assertEqual(payload.get("location"), "Springfield, MA, United States")
 
-    def test_search_url_includes_extended_filters(self) -> None:
+    def test_search_url_includes_safe_extended_filters(self) -> None:
         url = build_airbnb_search_url(
             {
-                "location": "Phoenicia",
+                "location": "Phoenicia, NY",
                 "min_price": 100,
                 "max_price": 400,
-                "room_type": "Entire home/apt",
+                "room_type": "cabin",
                 "amenities": ["hot tub", "wifi"],
                 "min_bedrooms": 2,
                 "min_beds": 3,
@@ -127,15 +127,32 @@ class SearchAssistTests(unittest.TestCase):
                 "flexible_cancellation": True,
             }
         )
+        self.assertIn("/s/Phoenicia--NY/homes", url)
+        self.assertIn("refinement_paths%5B%5D=%2Fhomes", url)
+        self.assertIn("query=Phoenicia%2C+NY", url)
+        self.assertIn("search_mode=regular_search", url)
         self.assertIn("price_min=100", url)
         self.assertIn("price_max=400", url)
-        self.assertIn("room_types%5B%5D=Entire+home%2Fapt", url)
-        self.assertIn("amenities%5B%5D=hot+tub", url)
-        self.assertIn("amenities%5B%5D=wifi", url)
+        self.assertIn("selected_filter_order%5B%5D=price_max%3A400", url)
+        self.assertNotIn("room_types", url)
+        self.assertNotIn("amenities", url)
         self.assertIn("min_bedrooms=2", url)
         self.assertIn("min_beds=3", url)
         self.assertIn("min_bathrooms=2", url)
         self.assertIn("flexible_cancellation=true", url)
+
+    @patch.dict("os.environ", {"RENTAL_SEARCH_ENABLE_TEXT_AMENITY_FILTERS": "true"})
+    def test_search_url_can_opt_into_text_amenity_filters(self) -> None:
+        url = build_airbnb_search_url(
+            {
+                "location": "Phoenicia",
+                "room_type": "Entire home/apt",
+                "amenities": ["hot tub", "wifi"],
+            }
+        )
+        self.assertIn("room_types%5B%5D=Entire+home%2Fapt", url)
+        self.assertIn("amenities%5B%5D=hot+tub", url)
+        self.assertIn("amenities%5B%5D=wifi", url)
 
 
 if __name__ == "__main__":
