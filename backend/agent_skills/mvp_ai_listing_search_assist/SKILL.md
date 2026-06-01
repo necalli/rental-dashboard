@@ -46,7 +46,7 @@ Rules:
 3. Use `rejected` for non-search requests, analysis/comparison requests, listing ingestion/capture requests, summarization requests, document requests, or general chat.
 4. Do not invent dates. If a date range omits the year, use the current year unless that range has already passed; then use next year.
 5. Default adults to `1` and children, infants, and pets to `0` only when the prompt is otherwise a valid listing search.
-6. Put direct Airbnb-style constraints in `intent`: destination, dates, guests, pets, price range, bedrooms, beds, bathrooms, room type, supported amenities, and flexible cancellation.
+6. Put direct Airbnb-style constraints in `intent`: destination, dates, guests, pets, price range, bedrooms, beds, bathrooms, room type, supported amenities, and flexible cancellation. Amenities should stay in `intent.amenities`; the backend may use them for post-search ranking instead of URL filtering when URL filtering is unreliable.
 7. Put preferences that should influence later ranking or explanation in `soft_preferences`, not in `intent`. Examples: secluded, romantic, quiet, scenic, walkable, near hiking, remote-work friendly, family friendly, close to restaurants, good for groups.
 8. Put unsupported, vague, or uncertain requests in `unsupported_or_uncertain_requests`. Do not silently drop user preferences.
 9. Keep amenities as short lowercase labels, such as `hot tub`, `wifi`, `pool`, `kitchen`, `free parking`, `washer`, `dryer`, `air conditioning`, `fireplace`, `dedicated workspace`, `waterfront`, `beachfront`, `ev charger`, `crib`, or `gym`.
@@ -57,7 +57,7 @@ Rules:
     - If the user says "total", "all in", "for the stay", or "for the week", use `min_price_total` or `max_price_total` and set `price_basis` to `total`.
     - If the user gives a price without a basis, use `clarification_needed`, set `price_basis` to `unknown`, preserve the amount in `max_price` or `min_price`, and ask whether the amount is nightly or total.
     - Do not put nightly values directly into `min_price` or `max_price`; those legacy fields are total-style URL caps.
-13. Mention in `message` which important preferences were not applied as hard filters and whether a price basis needs clarification.
+13. Mention in `message` which important preferences may be used for ranking/explanation rather than hard filtering and whether a price basis needs clarification.
 14. Keep `confidence` between `0` and `1`.
 
 Examples:
@@ -93,7 +93,7 @@ Output:
   },
   "soft_preferences": ["cabin"],
   "unsupported_or_uncertain_requests": [],
-  "message": "I can search Phoenicia with dates, guests, pets, nightly price, hot tub, and wifi. I will keep cabin as a preference.",
+  "message": "I can search Phoenicia with dates, guests, pets, and nightly price. I will use hot tub, wifi, and cabin for ranking when possible.",
   "confidence": 0.9
 }
 ```

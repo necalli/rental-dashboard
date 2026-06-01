@@ -11,6 +11,7 @@ from .airbnb_parser_v1 import parse_capture
 from .airbnb_search_parser_v1 import parse_search_from_responses_with_meta
 from .parser_drift import compact_parser_meta
 from .playwright_capture import PlaywrightCapture
+from .preference_scoring import apply_preference_alignment
 from .rate_limiter import RateLimiter
 from .job_support import CaptureAccessPolicy, CapturePayloadStore, JobMetricRecorder
 from .listing_schema import normalize_listing, validate_listing
@@ -273,7 +274,7 @@ def _search_filter_diagnostics(payload: Dict[str, Any], *, listing_count: int) -
                 {
                     "key": "amenities",
                     "value": amenities,
-                    "reason": "Text amenity URL filters are disabled; amenities are retained for later review/ranking.",
+                    "reason": "Text amenity URL filters are disabled; amenities are ranked after the broad Airbnb search when visible.",
                 }
             )
     soft_preferences = payload.get("soft_preferences") if isinstance(payload.get("soft_preferences"), list) else []
@@ -282,7 +283,7 @@ def _search_filter_diagnostics(payload: Dict[str, Any], *, listing_count: int) -
             {
                 "key": "soft_preferences",
                 "value": soft_preferences,
-                "reason": "Soft preferences are not direct Airbnb URL filters.",
+                "reason": "Soft preferences are ranked after the broad Airbnb search.",
             }
         )
     price_filter = payload.get("price_filter") if isinstance(payload.get("price_filter"), dict) else {}
@@ -1081,6 +1082,7 @@ class JobRunner:
             listing = _apply_fx_pricing(listing)
             listing["validation"] = validate_search_listing(listing)
             normalized.append(listing)
+        normalized, preference_summary = apply_preference_alignment(normalized, payload)
         job_metrics["parse_ms"] = _elapsed_ms(parse_started)
         if parser_meta:
             job_metrics["parser_drift"] = compact_parser_meta(parser_meta)
@@ -1092,6 +1094,7 @@ class JobRunner:
             "captured_at": _now_iso(),
             "parser_meta": parser_meta or {},
             "filter_diagnostics": filter_diagnostics,
+            "preference_summary": preference_summary,
         }
         persist_started = time.monotonic()
         run_id = self.storage.add_search_run(payload, result, raw_ids)
@@ -1104,6 +1107,7 @@ class JobRunner:
                 "run_id": run_id,
                 "listing_count": len(normalized),
                 "filter_diagnostics": filter_diagnostics,
+                "preference_summary": preference_summary,
             }
         )
         return job_metrics

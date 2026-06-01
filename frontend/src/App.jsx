@@ -77,6 +77,10 @@ import {
   getMetricValue,
   getAmenitiesList,
   getPrimaryPhoto,
+  getPreferenceAlignment,
+  getPreferenceScore,
+  hasPreferenceAlignment,
+  getPreferenceAlignmentLabel,
   formatJobLabel,
   requestJson,
 } from '@/lib/dashboardUtils.js'
@@ -87,6 +91,7 @@ export default function App() {
   const [listings, setListings] = useState([])
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [searchTerm, setSearchTerm] = useState('')
+  const [searchSort, setSearchSort] = useState('best_match')
   const [viewMode, setViewMode] = useState('search')
   const [ingestedSearchTerm, setIngestedSearchTerm] = useState('')
   const [ingestedSort, setIngestedSort] = useState('newest')
@@ -595,16 +600,44 @@ export default function App() {
   }, [llmSummaryStatus, detailsListing?.id, detailsListing?.listing_id])
 
   const filteredListings = useMemo(() => {
-    if (!searchTerm) return listings
-    const needle = searchTerm.toLowerCase()
-    return listings.filter((listing) => {
+    const source = !searchTerm ? listings : listings.filter((listing) => {
+      const needle = searchTerm.toLowerCase()
       return (
         listing.title?.toLowerCase().includes(needle) ||
         listing.location?.toLowerCase().includes(needle) ||
         listing.property_type?.toLowerCase().includes(needle)
       )
     })
-  }, [listings, searchTerm])
+    const list = [...source]
+    const compareNumbers = (a, b) => (a === null || a === undefined ? -1 : a) - (b === null || b === undefined ? -1 : b)
+    const hasAnyPreference = list.some((listing) => hasPreferenceAlignment(listing))
+    list.sort((a, b) => {
+      if (searchSort === 'best_match' && hasAnyPreference) {
+        const aAlign = getPreferenceAlignment(a) || {}
+        const bAlign = getPreferenceAlignment(b) || {}
+        const scoreDelta = getPreferenceScore(b) - getPreferenceScore(a)
+        if (scoreDelta !== 0) return scoreDelta
+        const matchedDelta = Number(bAlign.matched_count || 0) - Number(aAlign.matched_count || 0)
+        if (matchedDelta !== 0) return matchedDelta
+        return Number(aAlign.rank || 9999) - Number(bAlign.rank || 9999)
+      }
+      if (searchSort === 'rating') return compareNumbers(getListingRating(b), getListingRating(a))
+      if (searchSort === 'price_low') {
+        return compareNumbers(
+          getUsdPriceValue(a, settings.priceDisplay).value,
+          getUsdPriceValue(b, settings.priceDisplay).value
+        )
+      }
+      if (searchSort === 'price_high') {
+        return compareNumbers(
+          getUsdPriceValue(b, settings.priceDisplay).value,
+          getUsdPriceValue(a, settings.priceDisplay).value
+        )
+      }
+      return 0
+    })
+    return list
+  }, [listings, searchTerm, searchSort, settings.priceDisplay])
 
   const filteredIngestedListings = useMemo(() => {
     if (!ingestedSearchTerm) return ingestedListings
@@ -2573,7 +2606,7 @@ export default function App() {
                     <CardTitle className="text-lg">Listings</CardTitle>
                     <CardDescription>Filter, select, and ingest listings.</CardDescription>
                   </div>
-                  <div className="flex flex-1 items-center gap-2 md:max-w-md">
+                  <div className="flex flex-1 flex-wrap items-center gap-2 md:max-w-2xl">
                     <div className="relative flex-1">
                       <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                       <Input
@@ -2583,6 +2616,16 @@ export default function App() {
                         className="pl-9"
                       />
                     </div>
+                    <select
+                      className="h-9 rounded-md border border-border bg-background px-3 text-sm"
+                      value={searchSort}
+                      onChange={(event) => setSearchSort(event.target.value)}
+                    >
+                      <option value="best_match">Best match</option>
+                      <option value="rating">Rating</option>
+                      <option value="price_low">Price: low to high</option>
+                      <option value="price_high">Price: high to low</option>
+                    </select>
                     <Button variant="outline" onClick={selectAll} disabled={filteredListings.length === 0}>
                       Select all
                     </Button>
@@ -2612,6 +2655,11 @@ export default function App() {
                     const priceLabel = getUsdPriceLabel(listing, settings.priceDisplay)
                     const rating = getListingRating(listing)
                     const { lat, lng } = getListingCoordinates(listing)
+                    const preferenceAlignment = getPreferenceAlignment(listing)
+                    const preferenceLabel = getPreferenceAlignmentLabel(listing)
+                    const matchedPreferences = preferenceAlignment?.matched || []
+                    const unknownPreferences = preferenceAlignment?.unknown || []
+                    const missingPreferences = preferenceAlignment?.missing || []
                     return (
                       <Card key={listing.id} className="overflow-hidden">
                         <div className="relative h-40 w-full overflow-hidden bg-muted">
@@ -2664,6 +2712,27 @@ export default function App() {
                             )}
                             {isIngested && <Badge variant="outline">Ingested</Badge>}
                           </div>
+                          {preferenceLabel && (
+                            <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="secondary">{preferenceLabel}</Badge>
+                                {matchedPreferences.slice(0, 3).map((item) => (
+                                  <Badge key={`matched-${item}`} variant="outline">
+                                    Matched: {item}
+                                  </Badge>
+                                ))}
+                              </div>
+                              {(unknownPreferences.length > 0 || missingPreferences.length > 0) && (
+                                <p className="text-muted-foreground">
+                                  {unknownPreferences.length > 0 &&
+                                    `Check details: ${unknownPreferences.slice(0, 3).join(', ')}`}
+                                  {unknownPreferences.length > 0 && missingPreferences.length > 0 ? ' | ' : ''}
+                                  {missingPreferences.length > 0 &&
+                                    `Missing: ${missingPreferences.slice(0, 3).join(', ')}`}
+                                </p>
+                              )}
+                            </div>
+                          )}
                           <div className="text-xs text-muted-foreground">
                             Lat {lat ?? 'n/a'} - Lng {lng ?? 'n/a'}
                           </div>

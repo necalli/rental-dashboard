@@ -343,6 +343,20 @@ const getPrimaryPhoto = (listing) => {
     null
   )
 }
+const getPreferenceAlignment = (listing) =>
+  listing?.preference_alignment && typeof listing.preference_alignment === 'object'
+    ? listing.preference_alignment
+    : null
+const getPreferenceScore = (listing) => safeNumber(getPreferenceAlignment(listing)?.score) ?? 0
+const hasPreferenceAlignment = (listing) => {
+  const alignment = getPreferenceAlignment(listing)
+  return Boolean(alignment && Number(alignment.requested_count || 0) > 0)
+}
+const getPreferenceAlignmentLabel = (listing) => {
+  const alignment = getPreferenceAlignment(listing)
+  if (!alignment || !alignment.requested_count) return null
+  return `Preference ${alignment.matched_count || 0}/${alignment.requested_count}`
+}
 const formatJobLabel = (job) => {
   if (!job) return 'Job'
   if (job.job_type === 'listing_ingest') {
@@ -416,6 +430,10 @@ export {
   getAmenityLabel,
   getAmenitiesList,
   getPrimaryPhoto,
+  getPreferenceAlignment,
+  getPreferenceScore,
+  hasPreferenceAlignment,
+  getPreferenceAlignmentLabel,
   formatJobLabel,
   requestJson,
 }
