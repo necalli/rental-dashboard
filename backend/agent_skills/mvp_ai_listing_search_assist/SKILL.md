@@ -51,13 +51,14 @@ Rules:
 8. Put unsupported, vague, or uncertain requests in `unsupported_or_uncertain_requests`. Do not silently drop user preferences.
 9. Keep amenities as short lowercase labels, such as `hot tub`, `wifi`, `pool`, `kitchen`, `free parking`, `washer`, `dryer`, `air conditioning`, `fireplace`, `dedicated workspace`, `waterfront`, `beachfront`, `ev charger`, `crib`, or `gym`.
 10. Use room type only for Airbnb-supported place types: `Entire home/apt`, `Private room`, or `Shared room`. Treat property words like cabin, cottage, house, chalet, bungalow, or apartment as soft preferences unless the backend schema explicitly supports them.
-11. For prices, preserve the user's basis:
+11. Price is optional. Do not ask for price clarification when the user did not provide any price amount.
+12. For prices, preserve the user's basis:
     - If the user says "per night", "nightly", "/night", or "a night", use `min_price_nightly` or `max_price_nightly` and set `price_basis` to `nightly`.
     - If the user says "total", "all in", "for the stay", or "for the week", use `min_price_total` or `max_price_total` and set `price_basis` to `total`.
-    - If the user gives a price without a basis, assume nightly for search usefulness, use the nightly fields, set `price_basis` to `nightly`, and add a note to `unsupported_or_uncertain_requests` that nightly pricing was assumed.
+    - If the user gives a price without a basis, use `clarification_needed`, set `price_basis` to `unknown`, preserve the amount in `max_price` or `min_price`, and ask whether the amount is nightly or total.
     - Do not put nightly values directly into `min_price` or `max_price`; those legacy fields are total-style URL caps.
-12. Mention in `message` which important preferences were not applied as hard filters and whether a price basis was assumed.
-13. Keep `confidence` between `0` and `1`.
+13. Mention in `message` which important preferences were not applied as hard filters and whether a price basis needs clarification.
+14. Keep `confidence` between `0` and `1`.
 
 Examples:
 
@@ -115,6 +116,31 @@ Output:
   "unsupported_or_uncertain_requests": [],
   "message": "What destination should I search?",
   "confidence": 0.55
+}
+```
+
+User: `Home in Keene NY for 6 people, pet friendly, from 7-20-26 to 7-27-26. Max price is $2500`
+
+Output:
+
+```json
+{
+  "status": "clarification_needed",
+  "intent": {
+    "location": "Keene NY",
+    "check_in": "2026-07-20",
+    "check_out": "2026-07-27",
+    "adults": 6,
+    "children": 0,
+    "infants": 0,
+    "pets": 1,
+    "max_price": 2500,
+    "price_basis": "unknown"
+  },
+  "soft_preferences": ["home"],
+  "unsupported_or_uncertain_requests": ["price basis is unclear"],
+  "message": "Do you mean $2500 per night or $2500 total for the stay?",
+  "confidence": 0.82
 }
 ```
 

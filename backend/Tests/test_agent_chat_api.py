@@ -96,7 +96,7 @@ class AgentChatApiTests(unittest.TestCase):
                 json={
                     "prompt": (
                         "Find a private room near Phoenicia July 18-25, 2026 "
-                        "for 4 adults with a dog, hot tub, 2 bedrooms, under $400"
+                        "for 4 adults with a dog, hot tub, 2 bedrooms, under $400 per night"
                     )
                 },
             )
@@ -118,6 +118,22 @@ class AgentChatApiTests(unittest.TestCase):
         self.assertEqual(payload.get("room_type"), "Private room")
         self.assertIn("hot tub", payload.get("amenities") or [])
         self.assertEqual(payload.get("min_bedrooms"), 2)
+
+    def test_agent_search_assist_clarifies_unqualified_price(self) -> None:
+        client = app_module.app.test_client()
+        with (
+            patch("services.search_assist.suggest_locations", return_value=[]),
+            patch.object(app_module.storage, "create_job") as mocked_create_job,
+        ):
+            response = client.post(
+                "/api/v1/agent/search-assist",
+                json={"prompt": "Home in Keene NY for 6 people, pet friendly. Max price is $2500"},
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json() or {}
+        self.assertEqual(data.get("status"), "clarification_needed")
+        self.assertIn("per night or total", data.get("message") or "")
+        self.assertEqual(mocked_create_job.call_count, 0)
 
     def test_agent_search_assist_requires_destination(self) -> None:
         client = app_module.app.test_client()

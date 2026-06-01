@@ -28,7 +28,7 @@ class SearchAssistTests(unittest.TestCase):
         service = SearchAssistService(storage)
         with patch("services.search_assist.suggest_locations", return_value=[]):
             result = service.assist(
-                "Cabin near Phoenicia July 18-25, 2026 for 2 adults and 1 dog with wifi and parking under $500"
+                "Cabin near Phoenicia July 18-25, 2026 for 2 adults and 1 dog with wifi and parking under $500 per night"
             )
         self.assertEqual(result.get("status"), "queued")
         self.assertEqual(len(storage.jobs), 1)
@@ -43,7 +43,33 @@ class SearchAssistTests(unittest.TestCase):
         self.assertEqual((payload.get("price_filter") or {}).get("basis"), "nightly")
         self.assertIn("wifi", payload.get("amenities") or [])
         self.assertIn("free parking", payload.get("amenities") or [])
-        self.assertIn("nightly", " ".join(result.get("unsupported_or_uncertain_requests") or []))
+
+    def test_unqualified_price_requires_clarification(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist("Home in Keene NY for 6 people, pet friendly. Max price is $2500")
+        self.assertEqual(result.get("status"), "clarification_needed")
+        self.assertEqual(storage.jobs, [])
+        self.assertIn("per night or total", result.get("message") or "")
+
+    def test_unknown_price_basis_without_price_does_not_block_search(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist(
+                "Home in Keene NY for 6 people, pet friendly",
+                parsed_intent={
+                    "location": "Keene NY",
+                    "adults": 6,
+                    "pets": 1,
+                    "price_basis": "unknown",
+                },
+                parsed_status="ready",
+            )
+        self.assertEqual(result.get("status"), "queued")
+        self.assertEqual(len(storage.jobs), 1)
+        self.assertNotIn("Price basis", " ".join(result.get("unsupported_or_uncertain_requests") or []))
 
     def test_invalid_prompt_does_not_queue(self) -> None:
         storage = _Storage()

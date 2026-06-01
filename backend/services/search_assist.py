@@ -328,6 +328,7 @@ class SearchAssistService:
             "min_price_total",
             "max_price_total",
             "price_basis",
+            "price_basis_assumed",
             "room_type",
             "amenities",
             "flexible_cancellation",
@@ -430,6 +431,26 @@ class SearchAssistService:
         min_total = self._to_positive_int(intent.get("min_price_total"))
         max_nightly = self._to_positive_int(intent.get("max_price_nightly"))
         min_nightly = self._to_positive_int(intent.get("min_price_nightly"))
+        max_legacy = self._to_positive_int(intent.get("max_price"))
+        min_legacy = self._to_positive_int(intent.get("min_price"))
+        has_price_amount = any(
+            value is not None
+            for value in (max_total, min_total, max_nightly, min_nightly, max_legacy, min_legacy)
+        )
+        if basis == "nightly":
+            if max_nightly is None and max_legacy is not None:
+                max_nightly = max_legacy
+                intent["max_price_nightly"] = max_nightly
+            if min_nightly is None and min_legacy is not None:
+                min_nightly = min_legacy
+                intent["min_price_nightly"] = min_nightly
+        elif basis == "total":
+            if max_total is None and max_legacy is not None:
+                max_total = max_legacy
+                intent["max_price_total"] = max_total
+            if min_total is None and min_legacy is not None:
+                min_total = min_legacy
+                intent["min_price_total"] = min_total
 
         if max_total is not None:
             intent["max_price"] = max_total
@@ -458,10 +479,8 @@ class SearchAssistService:
                 "derived_min_total": intent.get("min_price"),
                 "derived_max_total": intent.get("max_price"),
             }
-        if str(intent.get("price_basis") or "").strip().lower() == "unknown":
+        if has_price_amount and str(intent.get("price_basis") or "").strip().lower() == "unknown":
             clean_notes.append("Price basis was unclear; confirm whether the amount is nightly or total if results look too broad or narrow.")
-        if str(intent.get("price_basis_assumed") or "").strip().lower() == "nightly":
-            clean_notes.append("Price amount was assumed to be nightly; say total if you mean a total stay budget.")
 
     def validate_intent(self, prompt: str, intent: Dict[str, Any]) -> Dict[str, Any]:
         if not str(prompt or "").strip():
@@ -477,7 +496,27 @@ class SearchAssistService:
             return {"error": "Please provide both check-in and check-out dates."}
         if check_in and check_out and str(check_out) <= str(check_in):
             return {"error": "Check-out must be after check-in."}
+        price_error = self._price_clarification_error(intent)
+        if price_error:
+            return {"error": price_error}
         return {"unsupported": []}
+
+    def _price_clarification_error(self, intent: Dict[str, Any]) -> Optional[str]:
+        basis = str(intent.get("price_basis") or "").strip().lower()
+        assumed = str(intent.get("price_basis_assumed") or "").strip().lower()
+        has_basis_specific_price = any(
+            self._to_positive_int(intent.get(key)) is not None
+            for key in ("min_price_nightly", "max_price_nightly", "min_price_total", "max_price_total")
+        )
+        has_legacy_price = any(
+            self._to_positive_int(intent.get(key)) is not None
+            for key in ("min_price", "max_price")
+        )
+        if not has_basis_specific_price and not has_legacy_price:
+            return None
+        if basis in {"nightly", "total"} and assumed != "nightly":
+            return None
+        return "Do you mean the price amount is per night or total for the stay?"
 
     def _queued_message(self, intent: Dict[str, Any]) -> str:
         parts = [str(intent.get("location") or "destination")]
@@ -559,28 +598,36 @@ class SearchAssistService:
 
     def _extract_prices(self, lowered: str) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
-        under = re.search(r"\b(?:under|below|less than|max(?:imum)?)\s*\$?([0-9][0-9,]*)", lowered)
+        under = re.search(
+            r"\b(?:under|below|less than|max(?:imum)?(?:\s+price)?(?:\s+is)?)\s*\$?([0-9][0-9,]*)",
+            lowered,
+        )
         if under:
             value = int(under.group(1).replace(",", ""))
             if self._mentions_total_price(lowered):
                 out["max_price_total"] = value
                 out["price_basis"] = "total"
-            else:
+            elif self._mentions_nightly_price(lowered):
                 out["max_price_nightly"] = value
                 out["price_basis"] = "nightly"
-                if not self._mentions_nightly_price(lowered):
-                    out["price_basis_assumed"] = "nightly"
-        over = re.search(r"\b(?:over|above|min(?:imum)?)\s*\$?([0-9][0-9,]*)", lowered)
+            else:
+                out["max_price"] = value
+                out["price_basis"] = "unknown"
+        over = re.search(
+            r"\b(?:over|above|min(?:imum)?(?:\s+price)?(?:\s+is)?)\s*\$?([0-9][0-9,]*)",
+            lowered,
+        )
         if over:
             value = int(over.group(1).replace(",", ""))
             if self._mentions_total_price(lowered):
                 out["min_price_total"] = value
                 out["price_basis"] = "total"
-            else:
+            elif self._mentions_nightly_price(lowered):
                 out["min_price_nightly"] = value
                 out["price_basis"] = "nightly"
-                if not self._mentions_nightly_price(lowered):
-                    out["price_basis_assumed"] = "nightly"
+            else:
+                out["min_price"] = value
+                out["price_basis"] = "unknown"
         between = re.search(r"\bbetween\s*\$?([0-9][0-9,]*)\s*(?:and|-|to)\s*\$?([0-9][0-9,]*)", lowered)
         if between:
             first = int(between.group(1).replace(",", ""))
@@ -589,12 +636,14 @@ class SearchAssistService:
                 out["min_price_total"] = min(first, second)
                 out["max_price_total"] = max(first, second)
                 out["price_basis"] = "total"
-            else:
+            elif self._mentions_nightly_price(lowered):
                 out["min_price_nightly"] = min(first, second)
                 out["max_price_nightly"] = max(first, second)
                 out["price_basis"] = "nightly"
-                if not self._mentions_nightly_price(lowered):
-                    out["price_basis_assumed"] = "nightly"
+            else:
+                out["min_price"] = min(first, second)
+                out["max_price"] = max(first, second)
+                out["price_basis"] = "unknown"
         return out
 
     def _mentions_nightly_price(self, lowered: str) -> bool:

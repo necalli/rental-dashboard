@@ -2483,8 +2483,16 @@ export default function App() {
                 {Number(aiSearchResult.intent?.pets || 0) > 0 && (
                   <Badge variant="outline">Pets</Badge>
                 )}
-                {aiSearchResult.intent?.max_price && (
-                  <Badge variant="outline">Max ${aiSearchResult.intent.max_price}</Badge>
+                {aiSearchResult.intent?.max_price_nightly && (
+                  <Badge variant="outline">Max ${aiSearchResult.intent.max_price_nightly}/night</Badge>
+                )}
+                {!aiSearchResult.intent?.max_price_nightly && aiSearchResult.intent?.max_price_total && (
+                  <Badge variant="outline">Max ${aiSearchResult.intent.max_price_total} total</Badge>
+                )}
+                {!aiSearchResult.intent?.max_price_nightly &&
+                  !aiSearchResult.intent?.max_price_total &&
+                  aiSearchResult.intent?.max_price && (
+                    <Badge variant="outline">Max ${aiSearchResult.intent.max_price}</Badge>
                 )}
                 {(aiSearchResult.intent?.amenities || []).slice(0, 5).map((amenity) => (
                   <Badge key={amenity} variant="outline">
