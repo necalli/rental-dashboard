@@ -92,6 +92,9 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [searchTerm, setSearchTerm] = useState('')
   const [searchSort, setSearchSort] = useState('best_match')
+  const [draggingSelection, setDraggingSelection] = useState(null)
+  const [searchDropActive, setSearchDropActive] = useState(false)
+  const [compareDropActive, setCompareDropActive] = useState(false)
   const [viewMode, setViewMode] = useState('search')
   const [ingestedSearchTerm, setIngestedSearchTerm] = useState('')
   const [ingestedSort, setIngestedSort] = useState('newest')
@@ -639,6 +642,17 @@ export default function App() {
     return list
   }, [listings, searchTerm, searchSort, settings.priceDisplay])
 
+  const selectedSearchListings = useMemo(() => {
+    const items = []
+    listings.forEach((listing) => {
+      const listingId = listing?.id ? String(listing.id) : ''
+      if (listingId && selectedIds.has(listingId)) {
+        items.push(listing)
+      }
+    })
+    return items
+  }, [listings, selectedIds])
+
   const filteredIngestedListings = useMemo(() => {
     if (!ingestedSearchTerm) return ingestedListings
     const needle = ingestedSearchTerm.toLowerCase()
@@ -756,6 +770,39 @@ export default function App() {
     return key ? reviewExpanding.has(key) : false
   }, [detailsListing, reviewExpanding])
 
+  const isInteractiveCardTarget = (target) => {
+    if (!target || typeof target.closest !== 'function') return false
+    return Boolean(
+      target.closest(
+        'button, a, input, textarea, select, label, [role="button"], [data-card-action="true"]'
+      )
+    )
+  }
+
+  const toggleSearchCardSelection = (event, listingId) => {
+    if (!listingId || isInteractiveCardTarget(event.target)) return
+    toggleSelection(String(listingId))
+  }
+
+  const handleSearchCardKeyDown = (event, listingId) => {
+    if (!listingId || isInteractiveCardTarget(event.target)) return
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    toggleSelection(String(listingId))
+  }
+
+  const toggleCompareCardSelection = (event, listingId) => {
+    if (!listingId || isInteractiveCardTarget(event.target)) return
+    toggleCompareSelection(String(listingId))
+  }
+
+  const handleCompareCardKeyDown = (event, listingId) => {
+    if (!listingId || isInteractiveCardTarget(event.target)) return
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    toggleCompareSelection(String(listingId))
+  }
+
   const toggleSelection = (listingId) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -797,6 +844,113 @@ export default function App() {
     setCompareSummary(null)
     setCompareStatus('idle')
     setCompareError(null)
+  }
+
+  const beginSearchCardDrag = (event, listingId) => {
+    if (!listingId || isInteractiveCardTarget(event.target)) {
+      event.preventDefault()
+      return
+    }
+    const id = String(listingId)
+    const ids = selectedIds.has(id) ? Array.from(selectedIds) : [id]
+    if (!selectedIds.has(id)) {
+      setSelectedIds(new Set([id]))
+    }
+    setDraggingSelection({ type: 'search', ids })
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData(
+      'application/x-rental-selection',
+      JSON.stringify({ type: 'search', ids })
+    )
+  }
+
+  const beginCompareCardDrag = (event, listingId) => {
+    if (!listingId || isInteractiveCardTarget(event.target)) {
+      event.preventDefault()
+      return
+    }
+    const id = String(listingId)
+    const ids = compareIds.has(id) ? Array.from(compareIds) : [id]
+    if (!compareIds.has(id)) {
+      toggleCompareSelection(id)
+    }
+    setDraggingSelection({ type: 'compare', ids })
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData(
+      'application/x-rental-selection',
+      JSON.stringify({ type: 'compare', ids })
+    )
+  }
+
+  const finishCardDrag = () => {
+    setDraggingSelection(null)
+    setSearchDropActive(false)
+    setCompareDropActive(false)
+  }
+
+  const handleDropZoneDragOver = (event, type) => {
+    if (draggingSelection?.type && draggingSelection.type !== type) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    if (type === 'search') {
+      setSearchDropActive(true)
+    } else {
+      setCompareDropActive(true)
+    }
+  }
+
+  const handleDropZoneDragLeave = (event, type) => {
+    if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return
+    if (type === 'search') {
+      setSearchDropActive(false)
+    } else {
+      setCompareDropActive(false)
+    }
+  }
+
+  const parseDraggedIds = (event, type) => {
+    try {
+      const raw = event.dataTransfer.getData('application/x-rental-selection')
+      const parsed = raw ? JSON.parse(raw) : null
+      if (parsed?.type === type && Array.isArray(parsed.ids)) {
+        return parsed.ids.map((id) => String(id)).filter(Boolean)
+      }
+    } catch {
+      // Ignore malformed drag payloads.
+    }
+    if (draggingSelection?.type === type && Array.isArray(draggingSelection.ids)) {
+      return draggingSelection.ids
+    }
+    return []
+  }
+
+  const dropSearchSelection = async (event) => {
+    event.preventDefault()
+    const ids = parseDraggedIds(event, 'search')
+    setSearchDropActive(false)
+    setDraggingSelection(null)
+    await ingestSelected(ids.length ? ids : null)
+  }
+
+  const openCompareSelection = (idsOverride = null) => {
+    const incoming = Array.isArray(idsOverride) ? idsOverride.map((id) => String(id)).filter(Boolean) : []
+    const next = new Set(compareIds)
+    incoming.forEach((id) => next.add(id))
+    if (next.size < 2) {
+      toast.error('Select at least 2 listings to compare.')
+      setCompareIds(next)
+      return
+    }
+    setCompareIds(next)
+    setCompareOpen(true)
+  }
+
+  const dropCompareSelection = (event) => {
+    event.preventDefault()
+    const ids = parseDraggedIds(event, 'compare')
+    setCompareDropActive(false)
+    setDraggingSelection(null)
+    openCompareSelection(ids)
   }
 
   const setReviewExpandState = (listingKey, active) => {
@@ -856,14 +1010,15 @@ export default function App() {
     toast.message(`Queued full reviews for ${targets.length} listing${targets.length === 1 ? '' : 's'}.`)
   }
 
-  const ingestSelected = async () => {
-    if (!selectedRunId || selectedIds.size === 0) return
+  const ingestSelected = async (idsOverride = null) => {
+    const listingIds = Array.isArray(idsOverride) ? idsOverride.filter(Boolean) : Array.from(selectedIds)
+    if (!selectedRunId || listingIds.length === 0) return
     setIngesting(true)
     try {
       const reviewMode = settings.reviewMode || 'lite'
       const payload = {
         run_id: selectedRunId,
-        listing_ids: Array.from(selectedIds),
+        listing_ids: listingIds,
         review_mode: reviewMode,
         ...buildCaptureOverrides(settings),
       }
@@ -2486,7 +2641,7 @@ export default function App() {
           )}
         </aside>
 
-        <main className="min-w-0 flex-1 space-y-6">
+        <main className="min-w-0 flex-1 space-y-6 pb-28">
           <form
             onSubmit={submitAiSearch}
             className="rounded-xl border border-border/60 bg-background/70 p-3"
@@ -2597,7 +2752,7 @@ export default function App() {
             {viewMode === 'ingested' && compareIds.size >= 2 && (
               <div className="flex flex-wrap items-center gap-2 rounded-full border border-border/60 bg-background/60 px-3 py-2 text-xs">
                 <span>{compareIds.size} selected for comparison</span>
-                <Button size="sm" onClick={() => setCompareOpen(true)}>
+                <Button size="sm" onClick={() => openCompareSelection()}>
                   Compare
                 </Button>
                 <Button variant="ghost" size="sm" onClick={clearCompare}>
@@ -2658,8 +2813,8 @@ export default function App() {
                 )}
                 <div className="grid gap-4 md:grid-cols-2">
                   {filteredListings.map((listing) => {
-                    const checked = selectedIds.has(listing.id)
                     const listingId = listing.id ? String(listing.id) : null
+                    const checked = listingId ? selectedIds.has(listingId) : false
                     const isIngested = listingId ? ingestedIdSet.has(listingId) : false
                     const priceLabel = getUsdPriceLabel(listing, settings.priceDisplay)
                     const rating = getListingRating(listing)
@@ -2670,7 +2825,21 @@ export default function App() {
                     const unknownPreferences = preferenceAlignment?.unknown || []
                     const missingPreferences = preferenceAlignment?.missing || []
                     return (
-                      <Card key={listing.id} className="overflow-hidden">
+                      <Card
+                        key={listing.id}
+                        className={`selection-card overflow-hidden ${checked ? 'selection-card--selected' : ''} ${
+                          draggingSelection?.type === 'search' && draggingSelection.ids?.includes(listingId)
+                            ? 'selection-card--dragging'
+                            : ''
+                        }`}
+                        tabIndex={0}
+                        aria-selected={checked}
+                        draggable={Boolean(listingId)}
+                        onClick={(event) => toggleSearchCardSelection(event, listingId)}
+                        onKeyDown={(event) => handleSearchCardKeyDown(event, listingId)}
+                        onDragStart={(event) => beginSearchCardDrag(event, listingId)}
+                        onDragEnd={finishCardDrag}
+                      >
                         <div className="relative h-40 w-full overflow-hidden bg-muted">
                           {listing.image ? (
                             <img
@@ -2683,8 +2852,8 @@ export default function App() {
                               No image
                             </div>
                           )}
-                          <div className="absolute left-3 top-3 rounded-full bg-background/80 p-2">
-                            <Checkbox checked={checked} onCheckedChange={() => toggleSelection(listing.id)} />
+                          <div className="selection-card-check absolute left-3 top-3 rounded-full bg-background/80 p-2" data-card-action="true">
+                            <Checkbox checked={checked} onCheckedChange={() => listingId && toggleSelection(listingId)} />
                           </div>
                         </div>
                         <CardContent className="space-y-3 pt-4">
@@ -2816,7 +2985,21 @@ export default function App() {
                     const unknownPreferences = preferenceAlignment?.unknown || []
                     const missingPreferences = preferenceAlignment?.missing || []
                     return (
-                      <Card key={listingId || listing.url} className="overflow-hidden">
+                      <Card
+                        key={listingId || listing.url}
+                        className={`selection-card overflow-hidden ${compareChecked ? 'selection-card--selected' : ''} ${
+                          draggingSelection?.type === 'compare' && draggingSelection.ids?.includes(String(listingId))
+                            ? 'selection-card--dragging'
+                            : ''
+                        }`}
+                        tabIndex={0}
+                        aria-selected={compareChecked}
+                        draggable={Boolean(listingId)}
+                        onClick={(event) => toggleCompareCardSelection(event, listingId)}
+                        onKeyDown={(event) => handleCompareCardKeyDown(event, listingId)}
+                        onDragStart={(event) => beginCompareCardDrag(event, listingId)}
+                        onDragEnd={finishCardDrag}
+                      >
                         <div className="relative h-40 w-full overflow-hidden bg-muted">
                           {getPrimaryPhoto(listing) ? (
                             <img
@@ -2829,7 +3012,7 @@ export default function App() {
                               No image
                             </div>
                           )}
-                          <div className="absolute left-3 top-3 rounded-full bg-background/80 p-2">
+                          <div className="selection-card-check absolute left-3 top-3 rounded-full bg-background/80 p-2" data-card-action="true">
                             <Checkbox
                               checked={compareChecked}
                               onCheckedChange={() => listingId && toggleCompareSelection(String(listingId))}
@@ -2917,6 +3100,71 @@ export default function App() {
             </Card>
           )}
       </main>
+      {viewMode === 'search' && selectedRunId && listings.length > 0 && (
+        <div className="selection-drop-tray pointer-events-none fixed bottom-5 left-1/2 z-40 w-[min(720px,calc(100vw-2rem))] -translate-x-1/2">
+          <div
+            className={`selection-drop-zone pointer-events-auto ${searchDropActive ? 'selection-drop-zone--active' : ''}`}
+            onDragOver={(event) => handleDropZoneDragOver(event, 'search')}
+            onDragLeave={(event) => handleDropZoneDragLeave(event, 'search')}
+            onDrop={dropSearchSelection}
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="selection-drop-icon">
+                <Database className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">
+                  {selectedSearchListings.length > 0
+                    ? `${selectedSearchListings.length} selected for ingest`
+                    : 'Select cards to ingest'}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  Drag selected search cards here or use the action button.
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => ingestSelected()}
+              disabled={ingesting || selectedSearchListings.length === 0}
+            >
+              {ingesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Ingest selected
+            </Button>
+          </div>
+        </div>
+      )}
+      {viewMode === 'ingested' && ingestedListings.length > 0 && (
+        <div className="selection-drop-tray pointer-events-none fixed bottom-5 left-1/2 z-40 w-[min(720px,calc(100vw-2rem))] -translate-x-1/2">
+          <div
+            className={`selection-drop-zone pointer-events-auto ${compareDropActive ? 'selection-drop-zone--active' : ''}`}
+            onDragOver={(event) => handleDropZoneDragOver(event, 'compare')}
+            onDragLeave={(event) => handleDropZoneDragLeave(event, 'compare')}
+            onDrop={dropCompareSelection}
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="selection-drop-icon">
+                <CheckCircle2 className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">
+                  {compareIds.size > 0 ? `${compareIds.size} selected for comparison` : 'Select cards to compare'}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  Drag selected ingested listings here to open comparison.
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => openCompareSelection()}
+              disabled={compareIds.size < 2}
+            >
+              Compare selected
+            </Button>
+          </div>
+        </div>
+      )}
       {enableAgentChat ? <AgentChat sessionId="rental-dashboard" /> : null}
         </div>
       </div>
