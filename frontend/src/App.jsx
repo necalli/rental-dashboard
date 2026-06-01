@@ -656,6 +656,15 @@ export default function App() {
     const list = [...filteredIngestedListings]
     const compareNumbers = (a, b) => (a === null || a === undefined ? -1 : a) - (b === null || b === undefined ? -1 : b)
     list.sort((a, b) => {
+      if (ingestedSort === 'best_match') {
+        const aAlign = getPreferenceAlignment(a) || {}
+        const bAlign = getPreferenceAlignment(b) || {}
+        const scoreDelta = getPreferenceScore(b) - getPreferenceScore(a)
+        if (scoreDelta !== 0) return scoreDelta
+        const matchedDelta = Number(bAlign.matched_count || 0) - Number(aAlign.matched_count || 0)
+        if (matchedDelta !== 0) return matchedDelta
+        return Number(aAlign.rank || 9999) - Number(bAlign.rank || 9999)
+      }
       if (ingestedSort === 'newest') return (b.captured_at || 0) - (a.captured_at || 0)
       if (ingestedSort === 'oldest') return (a.captured_at || 0) - (b.captured_at || 0)
       if (ingestedSort === 'rating') return compareNumbers(getListingRating(b), getListingRating(a))
@@ -2766,6 +2775,7 @@ export default function App() {
                       value={ingestedSort}
                       onChange={(event) => setIngestedSort(event.target.value)}
                     >
+                      <option value="best_match">Best match</option>
                       <option value="newest">Newest</option>
                       <option value="oldest">Oldest</option>
                       <option value="rating">Rating</option>
@@ -2800,6 +2810,11 @@ export default function App() {
                     const priceLabel = getUsdPriceLabel(listing, settings.priceDisplay)
                     const rating = getListingRating(listing)
                     const { lat, lng } = getListingCoordinates(listing)
+                    const preferenceAlignment = getPreferenceAlignment(listing)
+                    const preferenceLabel = getPreferenceAlignmentLabel(listing)
+                    const matchedPreferences = preferenceAlignment?.matched || []
+                    const unknownPreferences = preferenceAlignment?.unknown || []
+                    const missingPreferences = preferenceAlignment?.missing || []
                     return (
                       <Card key={listingId || listing.url} className="overflow-hidden">
                         <div className="relative h-40 w-full overflow-hidden bg-muted">
@@ -2866,6 +2881,27 @@ export default function App() {
                             <Badge variant="outline">{getValidationLabel(listing)}</Badge>
                             {coverageLabel && <Badge variant="outline">{coverageLabel}</Badge>}
                           </div>
+                          {preferenceLabel && (
+                            <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="secondary">{preferenceLabel}</Badge>
+                                {matchedPreferences.slice(0, 5).map((item) => (
+                                  <Badge key={`ingested-matched-${item}`} variant="outline">
+                                    Matched: {item}
+                                  </Badge>
+                                ))}
+                              </div>
+                              {(unknownPreferences.length > 0 || missingPreferences.length > 0) && (
+                                <p className="text-muted-foreground">
+                                  {unknownPreferences.length > 0 &&
+                                    `Unknown: ${unknownPreferences.slice(0, 4).join(', ')}`}
+                                  {unknownPreferences.length > 0 && missingPreferences.length > 0 ? ' | ' : ''}
+                                  {missingPreferences.length > 0 &&
+                                    `Missing: ${missingPreferences.slice(0, 4).join(', ')}`}
+                                </p>
+                              )}
+                            </div>
+                          )}
                           {stageGuidance && (
                             <p className="text-xs text-muted-foreground">{stageGuidance}</p>
                           )}

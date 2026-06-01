@@ -1021,6 +1021,20 @@ class JobRunner:
         listing = normalize_listing(listing)
         listing = _apply_fx_pricing(listing)
         listing["validation"] = validate_listing(listing)
+        preference_context = payload.get("preference_context")
+        if not isinstance(preference_context, dict):
+            preference_context = {
+                key: payload.get(key)
+                for key in ("amenities", "soft_preferences", "room_type")
+                if payload.get(key) not in (None, "", [], {})
+            }
+        scored_listings, preference_summary = apply_preference_alignment(
+            [listing],
+            preference_context or {},
+        )
+        if preference_summary.get("requested"):
+            listing = scored_listings[0]
+            job_metrics["preference_summary"] = preference_summary
         job_metrics["listing_detail_signal"] = bool(_has_listing_detail_signal(listing))
         if not bool(review_only) and not _has_listing_detail_signal(listing):
             raise ValueError(

@@ -44,6 +44,28 @@ class PreferenceScoringTests(unittest.TestCase):
         self.assertEqual(alignment["unknown"], [])
         self.assertEqual(alignment["missing"], ["hot tub"])
 
+    def test_structured_amenities_can_match_detail_ingest_preferences(self) -> None:
+        scored, summary = apply_preference_alignment(
+            [
+                {
+                    "id": "listing-1",
+                    "title": "Cottage in Catskill",
+                    "amenities": [
+                        {"group": "Internet and office", "items": ["Wifi"]},
+                        {"group": "Parking and facilities", "items": ["Hot tub", "Free parking"]},
+                    ],
+                }
+            ],
+            {"amenities": ["hot tub", "wifi"], "soft_preferences": ["cottage"]},
+        )
+
+        alignment = scored[0]["preference_alignment"]
+        self.assertEqual(alignment["matched"], ["hot tub", "wifi", "cottage"])
+        self.assertEqual(alignment["missing"], [])
+        self.assertEqual(alignment["unknown"], [])
+        self.assertEqual(alignment["score"], 1.0)
+        self.assertEqual(summary["matched_any_count"], 1)
+
     def test_applies_alignment_and_ranks_matches_first(self) -> None:
         listings = [
             {"id": "1", "title": "Apartment in Catskill", "pricing": {"price_total_usd": 1000}},

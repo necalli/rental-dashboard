@@ -141,10 +141,15 @@ def _phrase_match(needle: str, haystack: str) -> bool:
 
 def _searchable_text(listing: Dict[str, Any]) -> str:
     parts: List[str] = []
-    for key in ("title", "property_type", "location", "description", "subtitle"):
+    for key in ("title", "property_type", "location", "description", "description_snippet", "subtitle"):
         value = listing.get(key)
         if value not in (None, "", [], {}):
-            parts.append(str(value))
+            if isinstance(value, dict):
+                for nested_key in ("name", "city", "state", "country"):
+                    if value.get(nested_key):
+                        parts.append(str(value.get(nested_key)))
+            else:
+                parts.append(str(value))
     return " ".join(parts)
 
 

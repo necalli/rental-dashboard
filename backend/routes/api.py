@@ -423,6 +423,11 @@ def ingest_search_listings():
     run = next((item for item in runs if item.get("run_id") == run_id), None)
     if run:
         run_params = run.get("params") or {}
+    preference_context = {}
+    for key in ("amenities", "soft_preferences", "room_type"):
+        value = run_params.get(key)
+        if value not in (None, "", [], {}):
+            preference_context[key] = value
 
     listings = storage.list_search_listings(run_id, limit=5000)
     by_id = {str(item.get("id")): item for item in listings if item.get("id")}
@@ -450,6 +455,8 @@ def ingest_search_listings():
             job_payload["review_only"] = bool(review_only)
         if review_limit is not None:
             job_payload["review_limit"] = int(review_limit)
+        if preference_context:
+            job_payload["preference_context"] = preference_context
         job_payload.update(capture_overrides)
         if force:
             job_payload["force"] = True
