@@ -136,6 +136,7 @@ class SearchAssistService:
             intent, unsupported, confidence = self.parse_intent(text)
             soft_preferences = []
             self._normalize_price_basis(intent, clean_notes=unsupported)
+        self._sanitize_room_type(intent, text, soft_preferences)
         status_hint = str(parsed_status or "").strip().lower()
         if status_hint == "rejected":
             return SearchAssistResult(
@@ -481,6 +482,28 @@ class SearchAssistService:
             }
         if has_price_amount and str(intent.get("price_basis") or "").strip().lower() == "unknown":
             clean_notes.append("Price basis was unclear; confirm whether the amount is nightly or total if results look too broad or narrow.")
+
+    def _sanitize_room_type(
+        self,
+        intent: Dict[str, Any],
+        prompt: str,
+        soft_preferences: List[str],
+    ) -> None:
+        room_type = str(intent.get("room_type") or "").strip()
+        if room_type != "Entire home/apt":
+            return
+        lowered = str(prompt or "").lower()
+        explicit_entire = bool(
+            re.search(
+                r"\b(entire\s+(?:home|house|place|apartment|apt|cabin|cottage)|whole\s+(?:home|house|place))\b",
+                lowered,
+            )
+        )
+        if explicit_entire:
+            return
+        intent.pop("room_type", None)
+        if re.search(r"\b(home|house|cabin|cottage|chalet|apartment)\b", lowered) and "home" not in soft_preferences:
+            soft_preferences.append("home")
 
     def validate_intent(self, prompt: str, intent: Dict[str, Any]) -> Dict[str, Any]:
         if not str(prompt or "").strip():

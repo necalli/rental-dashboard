@@ -259,6 +259,55 @@ class SearchParserDriftTests(unittest.TestCase):
         self.assertEqual((listings[0].get("pricing") or {}).get("price_total"), 1400.0)
         self.assertFalse(parser_meta.get("drift_detected"))
 
+    def test_search_parser_falls_back_to_deferred_html_state(self) -> None:
+        state = {
+            "niobeClientData": [
+                [
+                    "search",
+                    {
+                        "data": {
+                            "presentation": {
+                                "staysSearch": {
+                                    "results": {
+                                        "searchResults": [
+                                            {
+                                                "listing": {
+                                                    "id": "456",
+                                                    "name": "Home in Keene",
+                                                    "pdpUrl": "/rooms/456",
+                                                    "localizedCity": "Keene",
+                                                    "lat": 44.25,
+                                                    "lng": -73.79,
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    },
+                ]
+            ]
+        }
+        html = (
+            '<html><script id="data-deferred-state-0" type="application/json">'
+            f"{json_dumps(state)}"
+            "</script></html>"
+        )
+
+        listings, parser_meta = parse_search_from_responses_with_meta(
+            [{"url": "https://www.airbnb.com/api/v3/Header", "data": {"data": {"foo": "bar"}}}],
+            "https://www.airbnb.com/s/Keene--NY/homes",
+            html=html,
+        )
+
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(listings[0].get("id"), "456")
+        self.assertEqual(listings[0].get("title"), "Home in Keene")
+        self.assertTrue((parser_meta.get("fallbacks") or {}).get("used_html_state_candidates"))
+        self.assertGreaterEqual((parser_meta.get("signals") or {}).get("html_state_candidate_count"), 1)
+        self.assertFalse(parser_meta.get("drift_detected"))
+
 
 if __name__ == "__main__":
     unittest.main()

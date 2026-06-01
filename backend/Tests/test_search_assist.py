@@ -71,6 +71,48 @@ class SearchAssistTests(unittest.TestCase):
         self.assertEqual(len(storage.jobs), 1)
         self.assertNotIn("Price basis", " ".join(result.get("unsupported_or_uncertain_requests") or []))
 
+    def test_home_phrase_is_soft_preference_not_room_type(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist(
+                "Home in Keene NY for 6 people, pet friendly, from 7-20-26 to 7-27-26",
+                parsed_intent={
+                    "location": "Keene, NY",
+                    "check_in": "2026-07-20",
+                    "check_out": "2026-07-27",
+                    "adults": 6,
+                    "pets": 1,
+                    "room_type": "Entire home/apt",
+                },
+                parsed_status="ready",
+                parsed_soft_preferences=["home"],
+            )
+        self.assertEqual(result.get("status"), "queued")
+        _, payload = storage.jobs[0]
+        self.assertNotIn("room_type", payload)
+        self.assertEqual(payload.get("soft_preferences"), ["home"])
+
+    def test_explicit_entire_home_keeps_room_type(self) -> None:
+        storage = _Storage()
+        service = SearchAssistService(storage)
+        with patch("services.search_assist.suggest_locations", return_value=[]):
+            result = service.assist(
+                "Entire home in Keene NY for 6 people, pet friendly, from 7-20-26 to 7-27-26",
+                parsed_intent={
+                    "location": "Keene, NY",
+                    "check_in": "2026-07-20",
+                    "check_out": "2026-07-27",
+                    "adults": 6,
+                    "pets": 1,
+                    "room_type": "Entire home/apt",
+                },
+                parsed_status="ready",
+            )
+        self.assertEqual(result.get("status"), "queued")
+        _, payload = storage.jobs[0]
+        self.assertEqual(payload.get("room_type"), "Entire home/apt")
+
     def test_invalid_prompt_does_not_queue(self) -> None:
         storage = _Storage()
         service = SearchAssistService(storage)

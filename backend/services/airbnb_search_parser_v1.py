@@ -1,4 +1,6 @@
 import base64
+import html as html_lib
+import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,6 +9,10 @@ from urllib.parse import parse_qs, urlparse
 from .parser_drift import build_parser_meta, build_response_signature
 
 SEARCH_PARSER_VERSION = "airbnb_search_v1"
+DEFERRED_STATE_PATTERN = re.compile(
+    r'<script[^>]+id=["\']data-deferred-state-\d+["\'][^>]*>(.*?)</script>',
+    re.S | re.I,
+)
 
 
 def parse_search_from_responses(
@@ -20,11 +26,13 @@ def parse_search_from_responses(
 def parse_search_from_responses_with_meta(
     responses: List[Dict[str, Any]],
     search_url: str,
+    html: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
     currency_hint = None
     generic_candidate_count = 0
     stays_search_candidate_count = 0
+    html_state_candidate_count = 0
     for response in responses:
         if not currency_hint:
             currency_hint = _extract_currency_from_response_url(response.get("url"))
@@ -35,6 +43,14 @@ def parse_search_from_responses_with_meta(
         stays_search_candidate_count += len(from_stays_search)
         candidates.extend(generic)
         candidates.extend(from_stays_search)
+
+    if not candidates and html:
+        for state in _extract_deferred_states(html):
+            generic = _collect_candidates(state, depth=16)
+            from_stays_search = _collect_stays_search_candidates(state)
+            html_state_candidate_count += len(generic) + len(from_stays_search)
+            candidates.extend(generic)
+            candidates.extend(from_stays_search)
 
     listings: Dict[str, Dict[str, Any]] = {}
     for item in candidates:
@@ -55,7 +71,12 @@ def parse_search_from_responses_with_meta(
         warnings.append("no_candidates_found")
     if candidates and not normalized:
         warnings.append("no_listings_normalized")
-    if generic_candidate_count == 0 and stays_search_candidate_count == 0 and responses:
+    if (
+        generic_candidate_count == 0
+        and stays_search_candidate_count == 0
+        and html_state_candidate_count == 0
+        and responses
+    ):
         warnings.append("search_candidate_paths_missing")
 
     parser_meta = build_parser_meta(
@@ -65,16 +86,33 @@ def parse_search_from_responses_with_meta(
         fallbacks={
             "used_generic_candidates": bool(generic_candidate_count > 0),
             "used_stays_search_candidates": bool(stays_search_candidate_count > 0),
+            "used_html_state_candidates": bool(html_state_candidate_count > 0),
         },
         signals={
             "response_count": len(responses or []),
             "candidate_count": len(candidates),
             "generic_candidate_count": generic_candidate_count,
             "stays_search_candidate_count": stays_search_candidate_count,
+            "html_state_candidate_count": html_state_candidate_count,
             "normalized_listing_count": len(normalized),
         },
     )
     return normalized, parser_meta
+
+
+def _extract_deferred_states(html: str) -> List[Dict[str, Any]]:
+    output: List[Dict[str, Any]] = []
+    for match in DEFERRED_STATE_PATTERN.finditer(html or ""):
+        raw = html_lib.unescape((match.group(1) or "").strip())
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            output.append(payload)
+    return output
 
 
 def _collect_candidates(node: Any, depth: int) -> List[Dict[str, Any]]:

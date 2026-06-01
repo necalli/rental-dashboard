@@ -1073,6 +1073,7 @@ class JobRunner:
         listings, parser_meta = parse_search_from_responses_with_meta(
             capture.get("responses") or [],
             capture.get("url"),
+            html=capture.get("html"),
         )
         normalized: List[Dict[str, Any]] = []
         for listing in listings:
