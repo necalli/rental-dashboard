@@ -185,6 +185,7 @@ export default function App() {
   const jobsInitializedRef = useRef(false)
   const checkInRef = useRef(null)
   const checkOutRef = useRef(null)
+  const suppressNextCardClickRef = useRef(false)
 
   const refreshRuns = async () => {
     setLoadingRuns(true)
@@ -781,6 +782,10 @@ export default function App() {
 
   const toggleSearchCardSelection = (event, listingId) => {
     if (!listingId || isInteractiveCardTarget(event.target)) return
+    if (suppressNextCardClickRef.current) {
+      suppressNextCardClickRef.current = false
+      return
+    }
     toggleSelection(String(listingId))
   }
 
@@ -793,6 +798,10 @@ export default function App() {
 
   const toggleCompareCardSelection = (event, listingId) => {
     if (!listingId || isInteractiveCardTarget(event.target)) return
+    if (suppressNextCardClickRef.current) {
+      suppressNextCardClickRef.current = false
+      return
+    }
     toggleCompareSelection(String(listingId))
   }
 
@@ -852,10 +861,11 @@ export default function App() {
       return
     }
     const id = String(listingId)
-    const ids = selectedIds.has(id) ? Array.from(selectedIds) : [id]
+    const ids = selectedIds.has(id) ? Array.from(selectedIds) : Array.from(new Set([...selectedIds, id]))
     if (!selectedIds.has(id)) {
-      setSelectedIds(new Set([id]))
+      setSelectedIds(new Set(ids))
     }
+    suppressNextCardClickRef.current = true
     setDraggingSelection({ type: 'search', ids })
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData(
@@ -870,10 +880,17 @@ export default function App() {
       return
     }
     const id = String(listingId)
-    const ids = compareIds.has(id) ? Array.from(compareIds) : [id]
-    if (!compareIds.has(id)) {
-      toggleCompareSelection(id)
+    const maxCompare = Number(settings.compareMax) || 6
+    if (!compareIds.has(id) && compareIds.size >= maxCompare) {
+      toast.error(`You can compare up to ${maxCompare} listings.`)
+      event.preventDefault()
+      return
     }
+    const ids = compareIds.has(id) ? Array.from(compareIds) : Array.from(new Set([...compareIds, id]))
+    if (!compareIds.has(id)) {
+      setCompareIds(new Set(ids))
+    }
+    suppressNextCardClickRef.current = true
     setDraggingSelection({ type: 'compare', ids })
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData(
@@ -886,6 +903,9 @@ export default function App() {
     setDraggingSelection(null)
     setSearchDropActive(false)
     setCompareDropActive(false)
+    window.setTimeout(() => {
+      suppressNextCardClickRef.current = false
+    }, 150)
   }
 
   const handleDropZoneDragOver = (event, type) => {
