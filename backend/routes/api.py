@@ -2,7 +2,7 @@
 import math
 import os
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 from werkzeug.local import LocalProxy
@@ -71,6 +71,57 @@ def _to_int(value: Any) -> Optional[int]:
         return int(value)
     except Exception:
         return None
+
+
+def _first_query_value(query: Dict[str, List[str]], *keys: str) -> Optional[str]:
+    for key in keys:
+        values = query.get(key)
+        if values:
+            value = str(values[0] or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _search_location_from_url(parsed) -> Optional[str]:
+    query = parse_qs(parsed.query or "")
+    query_location = _first_query_value(query, "query")
+    if query_location:
+        return unquote(query_location).strip()
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() == "s":
+        return unquote(parts[1]).replace("--", ", ").replace("-", " ").strip() or None
+    return None
+
+
+def _search_params_from_url(url: str) -> Dict[str, Any]:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query or "")
+    params: Dict[str, Any] = {
+        "search_url": url,
+        "search_import_source": "airbnb_url",
+    }
+    location = _search_location_from_url(parsed)
+    if location:
+        params["location"] = location
+    for out_key, query_key in (
+        ("check_in", "checkin"),
+        ("check_out", "checkout"),
+        ("adults", "adults"),
+        ("children", "children"),
+        ("infants", "infants"),
+        ("pets", "pets"),
+        ("min_price", "price_min"),
+        ("max_price", "price_max"),
+        ("min_bedrooms", "min_bedrooms"),
+        ("min_beds", "min_beds"),
+        ("min_bathrooms", "min_bathrooms"),
+        ("place_id", "place_id"),
+    ):
+        value = _first_query_value(query, query_key)
+        if value is not None:
+            params[out_key] = value
+    return params
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -387,6 +438,24 @@ def run_search():
     job_payload.update(_extract_capture_overrides(payload, include_review_controls=False))
     job = storage.create_job("search", job_payload)
     return jsonify({"job": job})
+
+
+@api_bp.post("/api/v1/search/url")
+def import_search_url():
+    payload = _payload()
+    search_url = (payload.get("search_url") or payload.get("url") or "").strip()
+    if not search_url:
+        return jsonify({"error": "search_url is required"}), 400
+    if not _is_airbnb_search_url(search_url):
+        return jsonify({"error": "Search URL import requires an Airbnb /s/... search URL."}), 400
+
+    job_payload = _search_params_from_url(search_url)
+    label = (payload.get("label") or "").strip()
+    if label:
+        job_payload["label"] = label
+    job_payload.update(_extract_capture_overrides(payload, include_review_controls=False))
+    job = storage.create_job("search", job_payload)
+    return jsonify({"job": job, "params": job_payload})
 
 
 @api_bp.get("/api/v1/geo/suggest")

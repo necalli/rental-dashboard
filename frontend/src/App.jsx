@@ -147,6 +147,7 @@ export default function App() {
   const [ingestedOpen, setIngestedOpen] = useState(true)
   const [jobsOpen, setJobsOpen] = useState(true)
   const [searchDialogOpen, setSearchDialogOpen] = useState(false)
+  const [searchUrlDialogOpen, setSearchUrlDialogOpen] = useState(false)
   const [urlDialogOpen, setUrlDialogOpen] = useState(false)
   const [memoryDialogOpen, setMemoryDialogOpen] = useState(false)
   const [locationSuggestions, setLocationSuggestions] = useState([])
@@ -172,6 +173,8 @@ export default function App() {
   const [aiSearchPrompt, setAiSearchPrompt] = useState('')
   const [aiSearchSubmitting, setAiSearchSubmitting] = useState(false)
   const [aiSearchResult, setAiSearchResult] = useState(null)
+  const [searchUrlInput, setSearchUrlInput] = useState('')
+  const [searchUrlSubmitting, setSearchUrlSubmitting] = useState(false)
   const [urlInput, setUrlInput] = useState('')
   const [searchSubmitting, setSearchSubmitting] = useState(false)
   const [urlSubmitting, setUrlSubmitting] = useState(false)
@@ -1168,6 +1171,34 @@ export default function App() {
     }
   }
 
+  const submitSearchUrl = async () => {
+    const searchUrl = searchUrlInput.trim()
+    if (!searchUrl) {
+      toast.error('Paste an Airbnb search URL first.')
+      return
+    }
+    setSearchUrlSubmitting(true)
+    try {
+      await requestJson('/api/v1/search/url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          search_url: searchUrl,
+          ...buildCaptureOverrides(settings, { includeReviews: false }),
+        }),
+      })
+      toast.success('Search URL queued. Refresh runs to see results.')
+      setSearchUrlDialogOpen(false)
+      setSearchUrlInput('')
+      refreshRuns()
+      refreshJobs()
+    } catch (err) {
+      toast.error(`Search URL import failed: ${err.message}`)
+    } finally {
+      setSearchUrlSubmitting(false)
+    }
+  }
+
   const runAiSearchAssist = async ({ prompt, locationOverride = null }) => {
     if (!prompt) {
       toast.error('Describe the listing search you want to run.')
@@ -1506,6 +1537,30 @@ export default function App() {
           </div>
         </DialogContent>
       </Dialog>
+        <Dialog open={searchUrlDialogOpen} onOpenChange={setSearchUrlDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Import search URL</DialogTitle>
+              <DialogDescription>
+                Paste an Airbnb search results URL to capture listings from that exact search.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3">
+              <Textarea
+                value={searchUrlInput}
+                onChange={(event) => setSearchUrlInput(event.target.value)}
+                placeholder="https://www.airbnb.com/s/Woodstock--NY/homes?..."
+                className="min-h-32"
+              />
+              <p className="text-xs text-muted-foreground">
+                The dashboard preserves Airbnb URL parameters such as dates, guests, pets, price, bedrooms, map state, and pagination cursor.
+              </p>
+              <Button onClick={submitSearchUrl} disabled={searchUrlSubmitting}>
+                {searchUrlSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Queue search URL'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
         <Dialog open={urlDialogOpen} onOpenChange={setUrlDialogOpen}>
           <DialogContent>
             <DialogHeader>
@@ -2367,6 +2422,9 @@ export default function App() {
               <Button variant="ghost" size="icon" onClick={() => setSearchDialogOpen(true)}>
                 <Plus className="h-4 w-4" />
               </Button>
+              <Button variant="ghost" size="icon" onClick={() => setSearchUrlDialogOpen(true)}>
+                <Search className="h-4 w-4" />
+              </Button>
               <Button variant="ghost" size="icon" onClick={() => setUrlDialogOpen(true)}>
                 <ExternalLink className="h-4 w-4" />
               </Button>
@@ -2406,8 +2464,12 @@ export default function App() {
                         <Plus className="h-4 w-4" />
                         <span className="ml-2">New search</span>
                       </Button>
+                      <Button variant="outline" className="w-full justify-start" onClick={() => setSearchUrlDialogOpen(true)}>
+                        <Search className="h-4 w-4" />
+                        <span className="ml-2">Import search URL</span>
+                      </Button>
                       <Button variant="outline" className="w-full justify-start" onClick={() => setUrlDialogOpen(true)}>
-                        Ingest URLs
+                        Ingest listing URLs
                       </Button>
                       <Button onClick={ingestSelected} disabled={selectedIds.size === 0 || ingesting} className="w-full">
                         {ingesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
