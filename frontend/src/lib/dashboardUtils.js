@@ -357,6 +357,38 @@ const getPreferenceAlignmentLabel = (listing) => {
   if (!alignment || !alignment.requested_count) return null
   return `Preference ${alignment.matched_count || 0}/${alignment.requested_count}`
 }
+const getDateContext = (listing) =>
+  listing?.date_context && typeof listing.date_context === 'object' ? listing.date_context : {}
+const getDateMatchType = (listing) => getDateContext(listing).date_match_type || null
+const getListingDatePair = (listing) => {
+  const dates = getDateContext(listing).listing_dates
+  return dates && typeof dates === 'object' ? dates : {}
+}
+const getRequestedDatePair = (listing) => {
+  const dates = getDateContext(listing).requested_dates
+  return dates && typeof dates === 'object' ? dates : {}
+}
+const formatDateRange = (dates) => {
+  if (!dates?.check_in || !dates?.check_out) return null
+  return `${dates.check_in} to ${dates.check_out}`
+}
+const getDateContextLabel = (listing) => {
+  const matchType = getDateMatchType(listing)
+  const listingDates = getListingDatePair(listing)
+  if (matchType === 'flexible_alternate' || matchType === 'alternate') {
+    const range = formatDateRange(listingDates)
+    return range ? `Alternate dates: ${range}` : 'Alternate dates'
+  }
+  if (matchType === 'exact') return 'Exact dates'
+  if (matchType === 'unknown_flexible') return 'Flexible dates unknown'
+  return null
+}
+const getDateContextVariant = (listing) => {
+  const matchType = getDateMatchType(listing)
+  if (matchType === 'flexible_alternate' || matchType === 'alternate') return 'secondary'
+  if (matchType === 'unknown_flexible') return 'outline'
+  return 'outline'
+}
 const formatJobLabel = (job) => {
   if (!job) return 'Job'
   if (job.job_type === 'listing_ingest') {
@@ -434,6 +466,13 @@ export {
   getPreferenceScore,
   hasPreferenceAlignment,
   getPreferenceAlignmentLabel,
+  getDateContext,
+  getDateMatchType,
+  getListingDatePair,
+  getRequestedDatePair,
+  formatDateRange,
+  getDateContextLabel,
+  getDateContextVariant,
   formatJobLabel,
   requestJson,
 }

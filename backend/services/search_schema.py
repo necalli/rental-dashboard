@@ -23,6 +23,7 @@ def normalize_search_listing(listing: Dict[str, Any]) -> Dict[str, Any]:
     listing["currency"] = _clean_text(listing.get("currency"))
     listing["pricing"] = _normalize_pricing(listing.get("pricing"))
     listing["image"] = _clean_text(listing.get("image"))
+    listing["date_context"] = _normalize_date_context(listing.get("date_context"))
     listing["captured_at"] = listing.get("captured_at") or _now_iso()
     return listing
 
@@ -95,6 +96,33 @@ def _normalize_pricing(value: Any) -> Dict[str, Any]:
         "fx_stale": _to_bool(value.get("fx_stale")),
         "source": _clean_text(value.get("source")),
     }
+
+
+def _normalize_date_context(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    requested = _normalize_date_pair(value.get("requested_dates"))
+    listing_dates = _normalize_date_pair(value.get("listing_dates"))
+    output: Dict[str, Any] = {
+        "date_search_mode": _clean_text(value.get("date_search_mode")),
+        "date_match_type": _clean_text(value.get("date_match_type")),
+    }
+    if requested:
+        output["requested_dates"] = requested
+    if listing_dates:
+        output["listing_dates"] = listing_dates
+    return {key: item for key, item in output.items() if item not in (None, "", [], {})}
+
+
+def _normalize_date_pair(value: Any) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    output: Dict[str, str] = {}
+    for source_key, target_key in (("check_in", "check_in"), ("check_out", "check_out")):
+        text = _clean_text(value.get(source_key))
+        if text:
+            output[target_key] = text
+    return output
 
 
 def _to_int(value: Any) -> Optional[int]:

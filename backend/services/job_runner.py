@@ -249,6 +249,17 @@ def _search_filter_diagnostics(payload: Dict[str, Any], *, listing_count: int) -
     add_applied("min_beds", payload.get("min_beds"), "Minimum beds")
     add_applied("min_bathrooms", payload.get("min_bathrooms"), "Minimum bathrooms")
     add_applied("room_type", payload.get("room_type"), "Room type")
+    if payload.get("flexible_date_search"):
+        applied.append(
+            {
+                "key": "flexible_date_search",
+                "value": payload.get("flexible_date_params") or True,
+                "label": "Flexible dates",
+            }
+        )
+        notes.append(
+            "Flexible date parameters were preserved from the imported Airbnb URL; individual listings may use alternate dates when available."
+        )
     if payload.get("min_price") or payload.get("max_price"):
         applied.append(
             {
@@ -1109,6 +1120,11 @@ class JobRunner:
             "parser_meta": parser_meta or {},
             "filter_diagnostics": filter_diagnostics,
             "preference_summary": preference_summary,
+            "date_search": {
+                "mode": payload.get("date_search_mode") or ("flexible" if payload.get("flexible_date_search") else "fixed"),
+                "flexible": bool(payload.get("flexible_date_search")),
+                "flexible_date_params": payload.get("flexible_date_params") or {},
+            },
         }
         persist_started = time.monotonic()
         run_id = self.storage.add_search_run(payload, result, raw_ids)

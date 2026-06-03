@@ -308,6 +308,55 @@ class SearchParserDriftTests(unittest.TestCase):
         self.assertGreaterEqual((parser_meta.get("signals") or {}).get("html_state_candidate_count"), 1)
         self.assertFalse(parser_meta.get("drift_detected"))
 
+    def test_search_parser_marks_flexible_alternate_listing_dates(self) -> None:
+        search_url = (
+            "https://www.airbnb.com/s/Woodstock--NY/homes?"
+            "checkin=2026-07-19&checkout=2026-07-26&"
+            "flexible_trip_lengths%5B%5D=one_week"
+        )
+        responses = [
+            {
+                "url": "https://www.airbnb.com/api/v3/StaysSearch?operationName=StaysSearch&currency=USD",
+                "data": {
+                    "data": {
+                        "staysSearch": {
+                            "results": {
+                                "searchResults": [
+                                    {
+                                        "listing": {
+                                            "id": "789",
+                                            "name": "Home in Woodstock",
+                                            "pdpUrl": "/rooms/789",
+                                        },
+                                        "listingParamOverrides": {
+                                            "checkin": "2026-07-26",
+                                            "checkout": "2026-07-30",
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            }
+        ]
+
+        listings, parser_meta = parse_search_from_responses_with_meta(responses, search_url)
+
+        self.assertEqual(len(listings), 1)
+        context = listings[0].get("date_context") or {}
+        self.assertEqual(context.get("date_search_mode"), "flexible")
+        self.assertEqual(context.get("date_match_type"), "flexible_alternate")
+        self.assertEqual(
+            context.get("requested_dates"),
+            {"check_in": "2026-07-19", "check_out": "2026-07-26"},
+        )
+        self.assertEqual(
+            context.get("listing_dates"),
+            {"check_in": "2026-07-26", "check_out": "2026-07-30"},
+        )
+        self.assertTrue((parser_meta.get("signals") or {}).get("flexible_date_search"))
+
 
 if __name__ == "__main__":
     unittest.main()

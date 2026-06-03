@@ -41,7 +41,8 @@ class SearchUrlImportTests(unittest.TestCase):
         url = (
             "https://www.airbnb.com/s/Woodstock--NY/homes?"
             "adults=6&checkin=2026-07-19&checkout=2026-07-26&pets=1&"
-            "price_max=2200&min_bedrooms=3&query=Woodstock%2C%20NY&place_id=abc"
+            "price_max=2200&min_bedrooms=3&query=Woodstock%2C%20NY&place_id=abc&"
+            "flexible_trip_lengths%5B%5D=one_week"
         )
 
         response = self.client.post("/api/v1/search/url", json={"search_url": url})
@@ -60,6 +61,12 @@ class SearchUrlImportTests(unittest.TestCase):
         self.assertEqual(payload["pets"], "1")
         self.assertEqual(payload["max_price"], "2200")
         self.assertEqual(payload["min_bedrooms"], "3")
+        self.assertTrue(payload["flexible_date_search"])
+        self.assertEqual(payload["date_search_mode"], "flexible")
+        self.assertEqual(
+            payload["flexible_date_params"],
+            {"flexible_trip_lengths[]": "one_week"},
+        )
 
     def test_import_search_url_rejects_listing_url(self) -> None:
         response = self.client.post(

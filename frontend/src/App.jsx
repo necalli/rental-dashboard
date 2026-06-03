@@ -81,6 +81,8 @@ import {
   getPreferenceScore,
   hasPreferenceAlignment,
   getPreferenceAlignmentLabel,
+  getDateContextLabel,
+  getDateContextVariant,
   formatJobLabel,
   requestJson,
 } from '@/lib/dashboardUtils.js'
@@ -656,6 +658,14 @@ export default function App() {
     })
     return items
   }, [listings, selectedIds])
+
+  const selectedRun = useMemo(
+    () => runs.find((run) => run.run_id === selectedRunId) || null,
+    [runs, selectedRunId]
+  )
+  const selectedRunUsesFlexibleDates = Boolean(
+    selectedRun?.params?.flexible_date_search || selectedRun?.result?.date_search?.flexible
+  )
 
   const filteredIngestedListings = useMemo(() => {
     if (!ingestedSearchTerm) return ingestedListings
@@ -1554,6 +1564,7 @@ export default function App() {
               />
               <p className="text-xs text-muted-foreground">
                 The dashboard preserves Airbnb URL parameters such as dates, guests, pets, price, bedrooms, map state, and pagination cursor.
+                Flexible-date URLs are flagged, and listing ingest uses card-specific dates when Airbnb exposes them.
               </p>
               <Button onClick={submitSearchUrl} disabled={searchUrlSubmitting}>
                 {searchUrlSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Queue search URL'}
@@ -2679,6 +2690,9 @@ export default function App() {
                             <div className="mt-2 flex flex-wrap gap-2">
                               <Badge variant="secondary">Listings: {run.result?.listing_count ?? 'n/a'}</Badge>
                               <Badge variant="outline">Responses: {run.result?.response_count ?? 'n/a'}</Badge>
+                              {(run.params?.flexible_date_search || run.result?.date_search?.flexible) && (
+                                <Badge variant="outline">Flexible dates</Badge>
+                              )}
                             </div>
                           </button>
                         )
@@ -2883,6 +2897,11 @@ export default function App() {
               </CardHeader>
               <Separator />
               <CardContent className="pt-4">
+                {selectedRunUsesFlexibleDates && (
+                  <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-100">
+                    Flexible dates were preserved from the Airbnb URL. Cards may use alternate dates; listing ingest will use those card-specific dates when the search payload provides them.
+                  </div>
+                )}
                 {loadingListings && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" /> Loading listings...
@@ -2906,6 +2925,7 @@ export default function App() {
                     const matchedPreferences = preferenceAlignment?.matched || []
                     const unknownPreferences = preferenceAlignment?.unknown || []
                     const missingPreferences = preferenceAlignment?.missing || []
+                    const dateContextLabel = getDateContextLabel(listing)
                     return (
                       <Card
                         key={listing.id}
@@ -2971,6 +2991,9 @@ export default function App() {
                               <Badge variant="outline">Rating {rating}</Badge>
                             )}
                             {isIngested && <Badge variant="outline">Ingested</Badge>}
+                            {dateContextLabel && (
+                              <Badge variant={getDateContextVariant(listing)}>{dateContextLabel}</Badge>
+                            )}
                           </div>
                           {preferenceLabel && (
                             <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-2 text-xs">

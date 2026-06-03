@@ -121,7 +121,38 @@ def _search_params_from_url(url: str) -> Dict[str, Any]:
         value = _first_query_value(query, query_key)
         if value is not None:
             params[out_key] = value
+    flexible_params = _flexible_date_params(query)
+    if flexible_params:
+        params["date_search_mode"] = "flexible"
+        params["flexible_date_search"] = True
+        params["flexible_date_params"] = flexible_params
+    else:
+        params["date_search_mode"] = "fixed"
     return params
+
+
+def _flexible_date_params(query: Dict[str, List[str]]) -> Dict[str, Any]:
+    flexible_keys = {
+        "flexible_date_search_filter_type",
+        "flexible_trip_dates",
+        "monthly_start_date",
+        "monthly_length",
+        "monthly_end_date",
+    }
+    output: Dict[str, Any] = {}
+    for key, values in query.items():
+        normalized_key = str(key)
+        is_flexible = (
+            normalized_key in flexible_keys
+            or normalized_key.startswith("flexible_trip_lengths")
+            or normalized_key.startswith("flexible_dates")
+        )
+        if not is_flexible:
+            continue
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if cleaned:
+            output[normalized_key] = cleaned[0] if len(cleaned) == 1 else cleaned
+    return output
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -516,6 +547,7 @@ def ingest_search_listings():
             value = _run_param_value(run_params, key)
             if value is not None and value != "":
                 job_payload[key] = value
+        _apply_listing_date_context(job_payload, listing)
         if review_mode:
             job_payload["review_mode"] = str(review_mode)
         else:
@@ -533,6 +565,35 @@ def ingest_search_listings():
         jobs.append(job)
 
     return jsonify({"jobs": jobs, "missing": missing})
+
+
+def _apply_listing_date_context(job_payload: Dict[str, Any], listing: Dict[str, Any]) -> None:
+    date_context = listing.get("date_context") if isinstance(listing, dict) else None
+    if not isinstance(date_context, dict):
+        return
+    listing_dates = date_context.get("listing_dates")
+    if not isinstance(listing_dates, dict):
+        return
+    check_in = str(listing_dates.get("check_in") or "").strip()
+    check_out = str(listing_dates.get("check_out") or "").strip()
+    if not check_in or not check_out:
+        return
+    requested_dates = date_context.get("requested_dates") if isinstance(date_context.get("requested_dates"), dict) else {}
+    original_check_in = job_payload.get("check_in")
+    original_check_out = job_payload.get("check_out")
+    job_payload["check_in"] = check_in
+    job_payload["check_out"] = check_out
+    job_payload["search_date_context"] = {
+        "date_search_mode": date_context.get("date_search_mode"),
+        "date_match_type": date_context.get("date_match_type"),
+        "requested_dates": requested_dates,
+        "listing_dates": {"check_in": check_in, "check_out": check_out},
+        "used_listing_dates": True,
+        "run_dates": {
+            "check_in": original_check_in,
+            "check_out": original_check_out,
+        },
+    }
 
 
 @api_bp.get("/api/v1/search/runs")

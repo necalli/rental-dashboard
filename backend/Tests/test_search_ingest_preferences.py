@@ -26,6 +26,8 @@ class _Storage:
                 "run_id": "run-1",
                 "params": {
                     "location": "Catskill, NY",
+                    "check_in": "2026-07-19",
+                    "check_out": "2026-07-26",
                     "amenities": ["hot tub", "wifi"],
                     "soft_preferences": ["cottage"],
                 },
@@ -37,6 +39,18 @@ class _Storage:
             {
                 "id": "listing-1",
                 "url": "https://www.airbnb.com/rooms/123",
+                "date_context": {
+                    "date_search_mode": "flexible",
+                    "date_match_type": "flexible_alternate",
+                    "requested_dates": {
+                        "check_in": "2026-07-19",
+                        "check_out": "2026-07-26",
+                    },
+                    "listing_dates": {
+                        "check_in": "2026-07-26",
+                        "check_out": "2026-07-30",
+                    },
+                },
             }
         ]
 
@@ -74,6 +88,9 @@ class SearchIngestPreferenceTests(unittest.TestCase):
                 "soft_preferences": ["cottage"],
             },
         )
+        self.assertEqual(payload.get("check_in"), "2026-07-26")
+        self.assertEqual(payload.get("check_out"), "2026-07-30")
+        self.assertTrue((payload.get("search_date_context") or {}).get("used_listing_dates"))
 
 
 if __name__ == "__main__":

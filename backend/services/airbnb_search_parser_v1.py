@@ -95,6 +95,7 @@ def parse_search_from_responses_with_meta(
             "stays_search_candidate_count": stays_search_candidate_count,
             "html_state_candidate_count": html_state_candidate_count,
             "normalized_listing_count": len(normalized),
+            "flexible_date_search": _is_flexible_date_search_url(search_url),
         },
     )
     return normalized, parser_meta
@@ -248,6 +249,7 @@ def _normalize_candidate(
         url = f"https://www.airbnb.com{url}"
     if not url:
         url = _extract_search_result_url(item)
+    date_context = _extract_date_context(item, listing, url, search_url)
 
     return {
         "id": listing_id,
@@ -265,8 +267,170 @@ def _normalize_candidate(
         "currency": _clean_text(currency),
         "pricing": pricing,
         "image": _clean_text(image),
+        "date_context": date_context,
         "captured_at": _now_iso(),
     }
+
+
+def _extract_date_context(
+    item: Dict[str, Any],
+    listing: Dict[str, Any],
+    listing_url: Optional[str],
+    search_url: str,
+) -> Dict[str, Any]:
+    requested = _requested_dates_from_url(search_url)
+    listing_dates = _listing_dates_from_item(item, listing, listing_url)
+    flexible = _is_flexible_date_search_url(search_url)
+
+    match_type = None
+    if listing_dates.get("check_in") and listing_dates.get("check_out"):
+        if (
+            requested.get("check_in")
+            and requested.get("check_out")
+            and listing_dates.get("check_in") == requested.get("check_in")
+            and listing_dates.get("check_out") == requested.get("check_out")
+        ):
+            match_type = "exact"
+        else:
+            match_type = "flexible_alternate" if flexible else "alternate"
+    elif flexible:
+        match_type = "unknown_flexible"
+    elif requested.get("check_in") and requested.get("check_out"):
+        match_type = "requested"
+
+    context: Dict[str, Any] = {
+        "date_search_mode": "flexible" if flexible else "fixed",
+    }
+    if requested:
+        context["requested_dates"] = requested
+    if listing_dates:
+        context["listing_dates"] = listing_dates
+    if match_type:
+        context["date_match_type"] = match_type
+    return context
+
+
+def _requested_dates_from_url(url: Optional[str]) -> Dict[str, str]:
+    return _date_params_from_url(url, checkin_keys=("checkin", "check_in"), checkout_keys=("checkout", "check_out"))
+
+
+def _date_params_from_url(
+    url: Optional[str],
+    *,
+    checkin_keys: tuple[str, ...],
+    checkout_keys: tuple[str, ...],
+) -> Dict[str, str]:
+    if not url:
+        return {}
+    try:
+        query = parse_qs(urlparse(url).query or "")
+    except Exception:
+        return {}
+    check_in = _first_query_value(query, *checkin_keys)
+    check_out = _first_query_value(query, *checkout_keys)
+    output: Dict[str, str] = {}
+    if _is_iso_date(check_in):
+        output["check_in"] = str(check_in)
+    if _is_iso_date(check_out):
+        output["check_out"] = str(check_out)
+    return output
+
+
+def _listing_dates_from_item(
+    item: Dict[str, Any],
+    listing: Dict[str, Any],
+    listing_url: Optional[str],
+) -> Dict[str, str]:
+    for source in (item, listing):
+        dates = _date_params_from_mapping(source)
+        if dates:
+            return dates
+    dates = _date_params_from_url(
+        listing_url,
+        checkin_keys=("check_in", "checkin"),
+        checkout_keys=("check_out", "checkout"),
+    )
+    return dates
+
+
+def _date_params_from_mapping(node: Any) -> Dict[str, str]:
+    if not isinstance(node, dict):
+        return {}
+    candidates = [
+        node,
+        node.get("listingParamOverrides"),
+        node.get("listingParams"),
+        node.get("pdpParams"),
+        node.get("urlParams"),
+        node.get("pricingQuote"),
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        check_in = (
+            candidate.get("checkin")
+            or candidate.get("checkIn")
+            or candidate.get("check_in")
+            or candidate.get("startDate")
+        )
+        check_out = (
+            candidate.get("checkout")
+            or candidate.get("checkOut")
+            or candidate.get("check_out")
+            or candidate.get("endDate")
+        )
+        output: Dict[str, str] = {}
+        if _is_iso_date(check_in):
+            output["check_in"] = str(check_in)
+        if _is_iso_date(check_out):
+            output["check_out"] = str(check_out)
+        if output:
+            return output
+    return {}
+
+
+def _first_query_value(query: Dict[str, List[str]], *keys: str) -> Optional[str]:
+    for key in keys:
+        values = query.get(key)
+        if values:
+            value = str(values[0] or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _is_flexible_date_search_url(url: Optional[str]) -> bool:
+    if not url:
+        return False
+    try:
+        query = parse_qs(urlparse(url).query or "")
+    except Exception:
+        return False
+    flexible_keys = {
+        "flexible_date_search_filter_type",
+        "flexible_trip_dates",
+        "monthly_start_date",
+        "monthly_length",
+        "monthly_end_date",
+    }
+    return any(
+        key in flexible_keys
+        or key.startswith("flexible_trip_lengths")
+        or key.startswith("flexible_dates")
+        for key in query
+    )
+
+
+def _is_iso_date(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", value.strip()):
+        return False
+    try:
+        time.strptime(value.strip(), "%Y-%m-%d")
+        return True
+    except Exception:
+        return False
 
 
 def _extract_lat_lng(listing: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
@@ -852,6 +1016,7 @@ def _merge_listing(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[s
         "price",
         "currency",
         "image",
+        "date_context",
     ]
     for key in keys:
         if merged.get(key) in (None, "", []):
@@ -863,6 +1028,11 @@ def _merge_listing(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[s
         current_pricing = merged.get("pricing")
         if not current_pricing or _score_pricing(incoming_pricing) > _score_pricing(current_pricing):
             merged["pricing"] = incoming_pricing
+    incoming_date_context = incoming.get("date_context")
+    if incoming_date_context:
+        current_date_context = merged.get("date_context")
+        if not current_date_context or _score_date_context(incoming_date_context) > _score_date_context(current_date_context):
+            merged["date_context"] = incoming_date_context
     if _score_listing(incoming) > _score_listing(existing):
         merged["captured_at"] = incoming.get("captured_at") or merged.get("captured_at")
     return merged
@@ -893,6 +1063,24 @@ def _score_pricing(pricing: Dict[str, Any]) -> int:
     for key in ("price_total", "price_nightly", "currency", "nights"):
         if pricing.get(key) not in (None, "", []):
             score += 1
+    return score
+
+
+def _score_date_context(context: Dict[str, Any]) -> int:
+    if not isinstance(context, dict):
+        return 0
+    score = 0
+    if context.get("date_search_mode"):
+        score += 1
+    if context.get("requested_dates"):
+        score += 1
+    if context.get("listing_dates"):
+        score += 3
+    match_type = context.get("date_match_type")
+    if match_type in {"exact", "flexible_alternate", "alternate"}:
+        score += 2
+    elif match_type:
+        score += 1
     return score
 
 
