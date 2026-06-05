@@ -100,6 +100,51 @@ class CompareCoverageGuardTests(unittest.TestCase):
         self.assertEqual(job_payload.get("require_min_coverage"), True)
         self.assertEqual(job_payload.get("min_review_coverage"), 0.6)
 
+    def test_compare_job_payload_includes_trip_memory_fields(self) -> None:
+        client = app_module.app.test_client()
+        listing_a = {"id": "a", "listing_id": "a", "title": "Listing A"}
+        listing_b = {"id": "b", "listing_id": "b", "title": "Listing B"}
+        fake_job = {"job_id": "cmp-2", "job_type": "listing_compare", "status": "queued"}
+
+        with patch.object(app_module.storage, "get_listing", side_effect=[listing_a, listing_b]), patch.object(
+            app_module.storage,
+            "list_reviews",
+            side_effect=[[], []],
+        ), patch.object(app_module.app.config["personality_rag"], "query_context", return_value={
+            "user_id": "rental-dashboard",
+            "query": "quiet cabin",
+            "hits": [
+                {
+                    "score": 0.9,
+                    "text": "Prior trips favored quiet wooded stays.",
+                    "citation": {"memory_id": "m1", "title": "Trip notes"},
+                }
+            ],
+        }) as mocked_query, patch.object(
+            app_module.storage, "get_enrichment_by_hash", return_value=None
+        ), patch.object(
+            app_module.storage, "create_job", return_value=fake_job
+        ) as mocked_create_job:
+            response = client.post(
+                "/api/v1/enrich/compare",
+                json={
+                    "listing_ids": ["a", "b"],
+                    "sync": False,
+                    "use_personality_rag": True,
+                    "user_id": "rental-dashboard",
+                    "memory_focus": "quiet wooded stays",
+                    "memory_limit": 4,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_query.call_count, 1)
+        _, job_payload = mocked_create_job.call_args.args
+        self.assertEqual(job_payload.get("use_personality_rag"), True)
+        self.assertEqual(job_payload.get("user_id"), "rental-dashboard")
+        self.assertEqual(job_payload.get("memory_focus"), "quiet wooded stays")
+        self.assertEqual(job_payload.get("memory_limit"), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ from flask import Blueprint, Response, current_app, jsonify, request, stream_wit
 from werkzeug.local import LocalProxy
 
 from services.geo_suggest import suggest_locations
+from services.comparison_memory import build_comparison_memory_query, compact_memory_context
 from services.llm_enrichment import (
     COMPARISON_PROMPT_VERSION,
     PROMPT_VERSION as LLM_PROMPT_VERSION,
@@ -194,6 +195,40 @@ def _split_tags(raw: Any) -> List[str]:
         seen.add(value)
         output.append(value)
     return output
+
+
+def _build_compare_memory_context(
+    listings: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not _to_bool(payload.get("use_personality_rag"), False):
+        return None
+    user_id = str(payload.get("user_id") or "").strip() or None
+    focus = str(payload.get("memory_focus") or "").strip()
+    limit = _coerce_int_range(payload.get("memory_limit"), 1, 12) or 6
+    tags = _split_tags(payload.get("memory_tags"))
+    query = build_comparison_memory_query(listings, focus=focus)
+    try:
+        rag_result = personality_rag.query_context(
+            user_id=user_id,
+            query=query,
+            limit=limit,
+            tags=tags,
+        )
+        context = compact_memory_context(rag_result, limit=limit)
+    except Exception as exc:
+        context = {
+            "enabled": True,
+            "user_id": user_id,
+            "query": query,
+            "hits": [],
+            "citations": [],
+            "profile": {"top_tags": []},
+            "retrieval_error": str(exc),
+        }
+    context["focus"] = focus
+    context["limit"] = int(limit)
+    return context
 
 
 def _summarize_job_metrics(items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1035,7 +1070,14 @@ def create_listing_comparison():
                 409,
             )
 
-    model, input_hash = build_comparison_request(listings, reviews_by_listing, model=model_override)
+    memory_context = _build_compare_memory_context(listings, payload)
+    use_personality_rag = bool(memory_context and memory_context.get("enabled"))
+    model, input_hash = build_comparison_request(
+        listings,
+        reviews_by_listing,
+        memory_context=memory_context,
+        model=model_override,
+    )
     compare_key = f"compare:{input_hash}"
     if not force:
         existing = storage.get_enrichment_by_hash(
@@ -1055,11 +1097,21 @@ def create_listing_comparison():
                 "review_limit": int(review_limit),
                 "require_min_coverage": bool(require_min_coverage),
                 "min_review_coverage": float(min_review_coverage),
+                "use_personality_rag": use_personality_rag,
+                "user_id": payload.get("user_id"),
+                "memory_focus": payload.get("memory_focus"),
+                "memory_limit": payload.get("memory_limit"),
+                "memory_tags": payload.get("memory_tags"),
             },
         )
         storage.update_job(job["job_id"], status="running")
         try:
-            output = generate_listing_comparison(listings, reviews_by_listing, model=model)
+            output = generate_listing_comparison(
+                listings,
+                reviews_by_listing,
+                memory_context=memory_context,
+                model=model,
+            )
             enrichment_id = storage.add_enrichment(
                 compare_key,
                 "listing_comparison",
@@ -1084,6 +1136,11 @@ def create_listing_comparison():
             "review_limit": int(review_limit),
             "require_min_coverage": bool(require_min_coverage),
             "min_review_coverage": float(min_review_coverage),
+            "use_personality_rag": use_personality_rag,
+            "user_id": payload.get("user_id"),
+            "memory_focus": payload.get("memory_focus"),
+            "memory_limit": payload.get("memory_limit"),
+            "memory_tags": payload.get("memory_tags"),
         },
     )
     return jsonify({"status": "queued", "job": job})

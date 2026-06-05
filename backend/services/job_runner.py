@@ -12,10 +12,12 @@ from .airbnb_search_parser_v1 import parse_search_from_responses_with_meta
 from .parser_drift import compact_parser_meta
 from .playwright_capture import PlaywrightCapture
 from .preference_scoring import apply_preference_alignment
+from .comparison_memory import build_comparison_memory_query, compact_memory_context
 from .rate_limiter import RateLimiter
 from .job_support import CaptureAccessPolicy, CapturePayloadStore, JobMetricRecorder
 from .listing_schema import normalize_listing, validate_listing
 from .search_schema import normalize_search_listing, validate_search_listing
+from .personality_rag import PersonalityRagService
 from .llm_enrichment import (
     COMPARISON_PROMPT_VERSION,
     PROMPT_VERSION as LLM_PROMPT_VERSION,
@@ -324,6 +326,24 @@ def _coerce_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _split_tags(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        parts = raw
+    else:
+        parts = str(raw).replace("\n", ",").split(",")
+    output: List[str] = []
+    seen = set()
+    for item in parts:
+        value = str(item or "").strip().lower()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
 
 
 def _has_summary_payload(listing: Dict[str, Any]) -> bool:
@@ -654,6 +674,7 @@ class JobRunner:
         self.review_mode_default = review_mode_default
         self.review_limit_default = max(1, int(review_limit_default or 24))
         self.capture_log_metrics = bool(capture_log_metrics)
+        self.personality_rag = PersonalityRagService(storage=storage)
 
     def _record_job_metric(
         self,
@@ -1186,6 +1207,40 @@ class JobRunner:
         )
         return metrics
 
+    def _build_compare_memory_context(
+        self,
+        listings: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not _coerce_bool(payload.get("use_personality_rag")):
+            return None
+        user_id = str(payload.get("user_id") or "").strip() or None
+        focus = str(payload.get("memory_focus") or "").strip()
+        limit = _coerce_int_range(payload.get("memory_limit"), 1, 12) or 6
+        tags = _split_tags(payload.get("memory_tags"))
+        query = build_comparison_memory_query(listings, focus=focus)
+        try:
+            rag_result = self.personality_rag.query_context(
+                user_id=user_id,
+                query=query,
+                limit=limit,
+                tags=tags,
+            )
+            context = compact_memory_context(rag_result, limit=limit)
+        except Exception as exc:
+            context = {
+                "enabled": True,
+                "user_id": user_id,
+                "query": query,
+                "hits": [],
+                "citations": [],
+                "profile": {"top_tags": []},
+                "retrieval_error": str(exc),
+            }
+        context["focus"] = focus
+        context["limit"] = int(limit)
+        return context
+
     def _process_listing_compare(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         metrics: Dict[str, Any] = {"kind": "listing_compare"}
         listing_ids = payload.get("listing_ids") or []
@@ -1225,12 +1280,23 @@ class JobRunner:
                     + json.dumps({"violations": violations}, ensure_ascii=False)
                 )
 
+        memory_context = self._build_compare_memory_context(listings, payload)
         model = payload.get("model")
-        model, input_hash = build_comparison_request(listings, reviews_by_listing, model=model)
+        model, input_hash = build_comparison_request(
+            listings,
+            reviews_by_listing,
+            memory_context=memory_context,
+            model=model,
+        )
         compare_key = f"compare:{input_hash}"
 
         llm_started = time.monotonic()
-        output = generate_listing_comparison(listings, reviews_by_listing, model=model)
+        output = generate_listing_comparison(
+            listings,
+            reviews_by_listing,
+            memory_context=memory_context,
+            model=model,
+        )
         llm_ms = _elapsed_ms(llm_started)
         persist_started = time.monotonic()
         enrichment_id = self.storage.add_enrichment(
@@ -1250,6 +1316,8 @@ class JobRunner:
                 "review_limit": int(review_limit),
                 "require_min_coverage": bool(require_min_coverage),
                 "min_review_coverage": float(min_review_coverage),
+                "use_personality_rag": bool(memory_context and memory_context.get("enabled")),
+                "memory_hit_count": len(memory_context.get("hits") or []) if memory_context else 0,
                 "llm_ms": llm_ms,
                 "persist_ms": persist_ms,
             }

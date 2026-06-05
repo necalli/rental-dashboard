@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 PROMPT_VERSION = "listing_summary_v1"
-COMPARISON_PROMPT_VERSION = "listing_comparison_v2"
+COMPARISON_PROMPT_VERSION = "listing_comparison_v3"
 DEFAULT_MODEL = os.getenv("RENTAL_LLM_MODEL", "gpt-5-mini")
 DEFAULT_TIMEOUT = int(os.getenv("RENTAL_LLM_TIMEOUT", "60"))
 DEFAULT_REASONING_EFFORT = os.getenv("RENTAL_LLM_REASONING_EFFORT", "").strip().lower()
@@ -56,11 +56,31 @@ class ComparisonListingNotes(BaseModel):
     watchouts: List[str] = []
 
 
+class ComparisonPersonalizedFit(BaseModel):
+    listing_id: str
+    title: Optional[str] = None
+    matches: List[str] = []
+    mismatches: List[str] = []
+    memory_basis: List[int] = []
+
+
+class ComparisonMemoryCitation(BaseModel):
+    citation_index: int
+    title: Optional[str] = None
+    filename: Optional[str] = None
+    source_type: Optional[str] = None
+    memory_id: Optional[str] = None
+    note: Optional[str] = None
+
+
 class ListingComparison(BaseModel):
     summary: str
     winner: ComparisonWinner
     sections: List[ComparisonSection] = []
     listing_notes: List[ComparisonListingNotes] = []
+    personalized_fit: List[ComparisonPersonalizedFit] = []
+    memory_citations: List[ComparisonMemoryCitation] = []
+    memory_context_note: Optional[str] = None
     tradeoffs: List[str] = []
     confidence: str = Field(..., description="low | medium | high")
 
@@ -164,6 +184,7 @@ def build_listing_summary_input(listing: Dict[str, Any], reviews: List[Dict[str,
 def build_comparison_input(
     listings: List[Dict[str, Any]],
     reviews_by_listing: Dict[str, List[Dict[str, Any]]],
+    memory_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     payload: List[Dict[str, Any]] = []
     for listing in listings:
@@ -186,7 +207,10 @@ def build_comparison_input(
                 "reviews": review_samples,
             }
         )
-    return {"listings": payload}
+    output: Dict[str, Any] = {"listings": payload}
+    if isinstance(memory_context, dict) and memory_context.get("enabled"):
+        output["trip_memory_context"] = memory_context
+    return output
 
 
 def build_input_hash(input_data: Dict[str, Any]) -> str:
@@ -280,6 +304,38 @@ def _comparison_json_schema() -> Dict[str, Any]:
                     "required": ["listing_id", "title", "pros", "cons", "watchouts"],
                 },
             },
+            "personalized_fit": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "listing_id": {"type": "string"},
+                        "title": {"type": ["string", "null"]},
+                        "matches": {"type": "array", "items": {"type": "string"}},
+                        "mismatches": {"type": "array", "items": {"type": "string"}},
+                        "memory_basis": {"type": "array", "items": {"type": "integer"}},
+                    },
+                    "required": ["listing_id", "title", "matches", "mismatches", "memory_basis"],
+                },
+            },
+            "memory_citations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "citation_index": {"type": "integer"},
+                        "title": {"type": ["string", "null"]},
+                        "filename": {"type": ["string", "null"]},
+                        "source_type": {"type": ["string", "null"]},
+                        "memory_id": {"type": ["string", "null"]},
+                        "note": {"type": ["string", "null"]},
+                    },
+                    "required": ["citation_index", "title", "filename", "source_type", "memory_id", "note"],
+                },
+            },
+            "memory_context_note": {"type": ["string", "null"]},
             "tradeoffs": {"type": "array", "items": {"type": "string"}},
             "confidence": {"type": "string"},
         },
@@ -288,6 +344,9 @@ def _comparison_json_schema() -> Dict[str, Any]:
             "winner",
             "sections",
             "listing_notes",
+            "personalized_fit",
+            "memory_citations",
+            "memory_context_note",
             "tradeoffs",
             "confidence",
         ],
@@ -403,17 +462,19 @@ def generate_listing_comparison(
     listings: List[Dict[str, Any]],
     reviews_by_listing: Dict[str, List[Dict[str, Any]]],
     *,
+    memory_context: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
 ) -> Dict[str, Any]:
     model = model or DEFAULT_MODEL
-    input_data = build_comparison_input(listings, reviews_by_listing)
+    input_data = build_comparison_input(listings, reviews_by_listing, memory_context=memory_context)
     label_map = {
         str(item.get("listing", {}).get("id") or ""): item.get("listing", {}).get("label")
         for item in input_data.get("listings", [])
     }
     system_prompt = (
         "You are a rental listing analyst. Return ONLY valid JSON that matches the provided schema. "
-        "Use only the provided listing data. If no clear winner, set winner.listing_id to null."
+        "Use only the provided listing data and optional trip memory context. If no clear winner, set winner.listing_id to null. "
+        "Do not invent listing facts from memory; use memory only to assess personal fit."
     )
     user_prompt = (
         "Compare the listings below. Provide structured sections (e.g., Location, Value, Amenities, Reviews, "
@@ -424,6 +485,13 @@ def generate_listing_comparison(
         "value comparisons are based on reviews and amenities only.\n\n"
         "When writing prose, refer to listings by their label (title). Do not use raw IDs in prose; "
         "only use IDs in winner.listing_id or section.winner_listing_id fields.\n\n"
+        "If trip_memory_context.enabled is true and hits are present, add a Personalized fit assessment for each listing. "
+        "Memory can indicate preferences, past dislikes, and travel style, but it must not override listing facts. "
+        "Use memory_basis citation_index values for any memory-grounded personalized_fit point. "
+        "Populate memory_citations from the provided trip_memory_context.citations that you used. "
+        "Keep the Summary, Winner, Key tradeoffs, Sections, and Listing notes grounded in listing/review data. "
+        "If no memory context is present, return empty personalized_fit and memory_citations arrays and set memory_context_note to null. "
+        "If memory context is enabled but sparse or not useful, set memory_context_note to a short explanation.\n\n"
         f"LABELS: {json.dumps(label_map, ensure_ascii=False)}\n\nDATA:\n{json.dumps(input_data, ensure_ascii=False)}"
     )
     output = _call_openai_structured(model, system_prompt, user_prompt, _comparison_json_schema())
@@ -443,9 +511,10 @@ def build_summary_request(
 def build_comparison_request(
     listings: List[Dict[str, Any]],
     reviews_by_listing: Dict[str, List[Dict[str, Any]]],
+    memory_context: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
 ) -> Tuple[str, str]:
     model = model or DEFAULT_MODEL
-    input_data = build_comparison_input(listings, reviews_by_listing)
+    input_data = build_comparison_input(listings, reviews_by_listing, memory_context=memory_context)
     input_hash = build_input_hash(input_data)
     return model, input_hash

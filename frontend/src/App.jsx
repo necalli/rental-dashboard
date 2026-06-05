@@ -1158,6 +1158,12 @@ export default function App() {
           require_min_coverage: Boolean(settings.requireMinCompareCoverage),
           min_review_coverage: Number.isFinite(minCoverageRatio) ? minCoverageRatio : undefined,
           model: settings.llmModelOverride || undefined,
+          use_personality_rag: Boolean(settings.compareUseMemory),
+          user_id: MEMORY_USER_ID,
+          memory_focus: settings.compareUseMemory
+            ? String(settings.compareMemoryFocus || '').trim() || undefined
+            : undefined,
+          memory_limit: Number(settings.compareMemoryLimit) || 6,
         }),
       })
       if (response.summary) {
@@ -1786,6 +1792,46 @@ export default function App() {
                 />
               </div>
               <div className="flex items-center justify-between">
+                <Label>Use trip memory in comparisons</Label>
+                <Checkbox
+                  checked={settings.compareUseMemory}
+                  onCheckedChange={(checked) =>
+                    setSettings((prev) => ({ ...prev, compareUseMemory: Boolean(checked) }))
+                  }
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Comparison memory focus</Label>
+                <Textarea
+                  value={settings.compareMemoryFocus || ''}
+                  disabled={!settings.compareUseMemory}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, compareMemoryFocus: event.target.value }))
+                  }
+                  placeholder="Optional: prioritize quiet stays, hiking access, kitchen quality, pet comfort..."
+                  rows={3}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Trip memory personalizes the fit assessment without changing objective listing facts.
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label>Trip memory snippets for comparison (1-12)</Label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="12"
+                  value={settings.compareMemoryLimit || 6}
+                  disabled={!settings.compareUseMemory}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      compareMemoryLimit: clampInteger(event.target.value, 1, 12, 6) || 6,
+                    }))
+                  }
+                />
+              </div>
+              <div className="flex items-center justify-between">
                 <Label>Require minimum review coverage to compare</Label>
                 <Checkbox
                   checked={settings.requireMinCompareCoverage}
@@ -1977,6 +2023,36 @@ export default function App() {
                   </Badge>
                 ))}
               </div>
+              <div className="rounded-xl border border-border/60 bg-background/60 p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">Trip memory personalization</p>
+                    <p className="text-xs text-muted-foreground">
+                      Adds a separate personalized-fit section using uploaded trip memory.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs text-muted-foreground">Use memory</Label>
+                    <Checkbox
+                      checked={settings.compareUseMemory}
+                      onCheckedChange={(checked) =>
+                        setSettings((prev) => ({ ...prev, compareUseMemory: Boolean(checked) }))
+                      }
+                    />
+                  </div>
+                </div>
+                {settings.compareUseMemory && (
+                  <div className="mt-3 grid gap-2">
+                    <Input
+                      value={settings.compareMemoryFocus || ''}
+                      onChange={(event) =>
+                        setSettings((prev) => ({ ...prev, compareMemoryFocus: event.target.value }))
+                      }
+                      placeholder="Optional focus for this comparison"
+                    />
+                  </div>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 <Button
                   onClick={generateComparison}
@@ -2069,6 +2145,84 @@ export default function App() {
                           <li key={`${item}-${idx}`}>{item}</li>
                         ))}
                       </ul>
+                    </div>
+                  )}
+                  {(compareSummary.memory_context_note ||
+                    (Array.isArray(compareSummary.personalized_fit) &&
+                      compareSummary.personalized_fit.length > 0)) && (
+                    <div className="rounded-xl border border-border/60 bg-background/60 p-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs uppercase text-muted-foreground">Personalized fit</p>
+                        {Array.isArray(compareSummary.memory_citations) &&
+                          compareSummary.memory_citations.length > 0 && (
+                            <Badge variant="outline">
+                              {compareSummary.memory_citations.length} memory sources
+                            </Badge>
+                          )}
+                      </div>
+                      {compareSummary.memory_context_note && (
+                        <p className="mt-2 text-muted-foreground">{compareSummary.memory_context_note}</p>
+                      )}
+                      {Array.isArray(compareSummary.personalized_fit) &&
+                        compareSummary.personalized_fit.length > 0 && (
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            {compareSummary.personalized_fit.map((item) => (
+                              <div
+                                key={`fit-${item.listing_id}`}
+                                className="rounded-lg border border-border/50 bg-muted/20 p-3"
+                              >
+                                <p className="font-semibold">
+                                  {item.title ||
+                                    compareListingMap.get(String(item.listing_id))?.title ||
+                                    item.listing_id}
+                                </p>
+                                {Array.isArray(item.matches) && item.matches.length > 0 && (
+                                  <div className="mt-2">
+                                    <p className="text-xs uppercase text-muted-foreground">Matches</p>
+                                    <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                                      {item.matches.map((note, idx) => (
+                                        <li key={`${item.listing_id}-match-${idx}`}>{note}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                                {Array.isArray(item.mismatches) && item.mismatches.length > 0 && (
+                                  <div className="mt-2">
+                                    <p className="text-xs uppercase text-muted-foreground">Mismatches</p>
+                                    <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                                      {item.mismatches.map((note, idx) => (
+                                        <li key={`${item.listing_id}-miss-${idx}`}>{note}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                                {Array.isArray(item.memory_basis) && item.memory_basis.length > 0 && (
+                                  <div className="mt-2 flex flex-wrap gap-1">
+                                    {item.memory_basis.map((basis) => (
+                                      <Badge key={`${item.listing_id}-basis-${basis}`} variant="outline">
+                                        Memory {basis}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      {Array.isArray(compareSummary.memory_citations) &&
+                        compareSummary.memory_citations.length > 0 && (
+                          <div className="mt-3 border-t border-border/60 pt-3">
+                            <p className="text-xs uppercase text-muted-foreground">Memory sources</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {compareSummary.memory_citations.map((citation) => (
+                                <Badge key={`citation-${citation.citation_index}`} variant="secondary">
+                                  {citation.citation_index}.{' '}
+                                  {citation.title || citation.filename || citation.source_type || 'Trip memory'}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                     </div>
                   )}
                   <div className="grid gap-3 sm:grid-cols-2">
