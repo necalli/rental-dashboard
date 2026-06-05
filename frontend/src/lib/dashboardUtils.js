@@ -142,6 +142,80 @@ const extractListingIdFromUrl = (url) => {
   const match = String(url).match(/\/rooms\/([^/?#]+)/)
   return match ? match[1] : null
 }
+const decodeDragText = (value) =>
+  String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+const normalizeAirbnbUrl = (value) => {
+  const raw = decodeDragText(value).trim().replace(/[),.;]+$/g, '')
+  if (!raw) return null
+  try {
+    const parsed = new URL(raw, 'https://www.airbnb.com')
+    const host = parsed.hostname.toLowerCase()
+    if (host !== 'airbnb.com' && !host.endsWith('.airbnb.com')) return null
+    parsed.hash = ''
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+const isAirbnbListingUrl = (value) => {
+  const normalized = normalizeAirbnbUrl(value)
+  if (!normalized) return false
+  try {
+    return new URL(normalized).pathname.toLowerCase().startsWith('/rooms/')
+  } catch {
+    return false
+  }
+}
+const isAirbnbSearchUrl = (value) => {
+  const normalized = normalizeAirbnbUrl(value)
+  if (!normalized) return false
+  try {
+    const path = new URL(normalized).pathname.toLowerCase()
+    return path === '/s' || path.startsWith('/s/')
+  } catch {
+    return false
+  }
+}
+const extractUrlsFromText = (value) => {
+  const text = decodeDragText(value)
+  if (!text) return []
+  const urls = []
+  const absoluteMatches = text.match(/https?:\/\/[^\s"'<>]+/gi) || []
+  urls.push(...absoluteMatches)
+  const relativeMatches = text.match(/(?:href=["'])?(\/rooms\/[^\s"'<>]+)/gi) || []
+  relativeMatches.forEach((match) => {
+    const cleaned = match.replace(/^href=["']?/i, '')
+    urls.push(cleaned)
+  })
+  const searchRelativeMatches = text.match(/(?:href=["'])?(\/s\/[^\s"'<>]+)/gi) || []
+  searchRelativeMatches.forEach((match) => {
+    const cleaned = match.replace(/^href=["']?/i, '')
+    urls.push(cleaned)
+  })
+  return urls
+}
+const extractAirbnbListingUrlsFromDragPayload = (payload = {}) => {
+  const values = [payload.uriList, payload.plainText, payload.html].filter(Boolean)
+  const candidates = values.flatMap((value) => extractUrlsFromText(value))
+  const output = []
+  const seen = new Set()
+  candidates.forEach((candidate) => {
+    const normalized = normalizeAirbnbUrl(candidate)
+    if (!normalized || !isAirbnbListingUrl(normalized) || seen.has(normalized)) return
+    seen.add(normalized)
+    output.push(normalized)
+  })
+  return output
+}
+const dragPayloadHasAirbnbSearchUrl = (payload = {}) => {
+  const values = [payload.uriList, payload.plainText, payload.html].filter(Boolean)
+  return values.flatMap((value) => extractUrlsFromText(value)).some((candidate) => isAirbnbSearchUrl(candidate))
+}
 const getListingUrl = (listing) => {
   if (!listing) return null
   if (listing.url) return listing.url
@@ -443,6 +517,8 @@ export {
   getUsdPriceLabel,
   getListingId,
   extractListingIdFromUrl,
+  extractAirbnbListingUrlsFromDragPayload,
+  dragPayloadHasAirbnbSearchUrl,
   getListingUrl,
   getListingLocation,
   getListingRating,

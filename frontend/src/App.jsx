@@ -61,6 +61,8 @@ import {
   getUsdPriceLabel,
   getListingId,
   extractListingIdFromUrl,
+  extractAirbnbListingUrlsFromDragPayload,
+  dragPayloadHasAirbnbSearchUrl,
   getListingUrl,
   getListingLocation,
   getListingRating,
@@ -923,8 +925,9 @@ export default function App() {
 
   const handleDropZoneDragOver = (event, type) => {
     if (draggingSelection?.type && draggingSelection.type !== type) return
+    if (!draggingSelection?.type && type !== 'search') return
     event.preventDefault()
-    event.dataTransfer.dropEffect = 'move'
+    event.dataTransfer.dropEffect = draggingSelection?.type ? 'move' : 'copy'
     if (type === 'search') {
       setSearchDropActive(true)
     } else {
@@ -957,11 +960,64 @@ export default function App() {
     return []
   }
 
+  const getExternalDragPayload = (event) => ({
+    uriList: event.dataTransfer?.getData('text/uri-list') || '',
+    plainText: event.dataTransfer?.getData('text/plain') || '',
+    html: event.dataTransfer?.getData('text/html') || '',
+  })
+
+  const queueListingUrls = async (urls, { source = 'manual' } = {}) => {
+    const listingUrls = Array.from(new Set((urls || []).map((url) => String(url || '').trim()).filter(Boolean)))
+    if (!listingUrls.length) {
+      toast.error('Add at least one listing URL')
+      return 0
+    }
+    const reviewMode = settings.reviewMode || 'lite'
+    const results = []
+    for (const url of listingUrls) {
+      const response = await requestJson('/api/v1/listings/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          review_mode: reviewMode,
+          review_limit: reviewMode === 'lite' ? Number(settings.liteReviewCount) || 24 : undefined,
+          ...buildCaptureOverrides(settings),
+        }),
+      })
+      results.push(response.job?.job_id)
+    }
+    toast.success(
+      source === 'drop'
+        ? `Queued ${results.length} dropped listing ingest${results.length === 1 ? '' : 's'}`
+        : `Queued ${results.length} listing ingests`
+    )
+    refreshJobs()
+    return results.length
+  }
+
   const dropSearchSelection = async (event) => {
     event.preventDefault()
-    const ids = parseDraggedIds(event, 'search')
     setSearchDropActive(false)
     setDraggingSelection(null)
+    const externalPayload = getExternalDragPayload(event)
+    const droppedListingUrls = extractAirbnbListingUrlsFromDragPayload(externalPayload)
+    if (droppedListingUrls.length > 0) {
+      setIngesting(true)
+      try {
+        await queueListingUrls(droppedListingUrls, { source: 'drop' })
+      } catch (err) {
+        toast.error(`Dropped listing ingest failed: ${err.message}`)
+      } finally {
+        setIngesting(false)
+      }
+      return
+    }
+    if (dragPayloadHasAirbnbSearchUrl(externalPayload)) {
+      toast.error('That looks like an Airbnb search URL. Use Import search URL for /s/... links.')
+      return
+    }
+    const ids = parseDraggedIds(event, 'search')
     await ingestSelected(ids.length ? ids : null)
   }
 
@@ -1273,25 +1329,9 @@ export default function App() {
     }
     setUrlSubmitting(true)
     try {
-      const reviewMode = settings.reviewMode || 'lite'
-      const results = []
-      for (const url of urls) {
-        const response = await requestJson('/api/v1/listings/ingest', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url,
-            review_mode: reviewMode,
-            review_limit: reviewMode === 'lite' ? Number(settings.liteReviewCount) || 24 : undefined,
-            ...buildCaptureOverrides(settings),
-          }),
-        })
-        results.push(response.job?.job_id)
-      }
-      toast.success(`Queued ${results.length} listing ingests`)
+      await queueListingUrls(urls)
       setUrlDialogOpen(false)
       setUrlInput('')
-      refreshJobs()
     } catch (err) {
       toast.error(`URL ingest failed: ${err.message}`)
     } finally {
@@ -3205,7 +3245,7 @@ export default function App() {
             </Card>
           )}
       </main>
-      {viewMode === 'search' && selectedRunId && listings.length > 0 && (
+      {viewMode === 'search' && (
         <div className="selection-drop-tray pointer-events-none fixed bottom-5 left-1/2 z-40 w-[min(720px,calc(100vw-2rem))] -translate-x-1/2">
           <div
             className={`selection-drop-zone pointer-events-auto ${searchDropActive ? 'selection-drop-zone--active' : ''}`}
@@ -3221,10 +3261,10 @@ export default function App() {
                 <p className="text-sm font-semibold">
                   {selectedSearchListings.length > 0
                     ? `${selectedSearchListings.length} selected for ingest`
-                    : 'Select cards to ingest'}
+                    : 'Drop or select listings to ingest'}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
-                  Drag selected search cards here or use the action button.
+                  Drop Airbnb listing cards or URLs here; selected dashboard cards ingest with the button.
                 </p>
               </div>
             </div>
