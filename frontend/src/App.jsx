@@ -1058,12 +1058,13 @@ export default function App() {
     })
   }
 
-  const queueFullReviews = async (listing, options = {}) => {
-    const { silent = false } = options
+  const queueReviewCapture = async (listing, options = {}) => {
+    const { mode = 'full', silent = false } = options
+    const reviewMode = mode === 'lite' ? 'lite' : 'full'
     const url = getListingUrl(listing)
     const listingKey = String(getListingId(listing) || url || '')
     if (!url) {
-      if (!silent) toast.error('Missing listing URL for full review capture.')
+      if (!silent) toast.error(`Missing listing URL for ${reviewMode} review capture.`)
       return
     }
     setReviewExpandState(listingKey, true)
@@ -1073,23 +1074,43 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url,
-          review_mode: 'full',
+          review_mode: reviewMode,
+          review_limit: reviewMode === 'lite' ? Number(settings.liteReviewCount) || 24 : undefined,
           review_only: true,
           force: true,
-          ...buildCaptureOverrides(settings),
+          ...buildCaptureOverrides(settings, { includeReviews: true }),
         }),
       })
       if (!silent) {
-        toast.success('Queued full review capture.')
+        toast.success(`Queued ${reviewMode} review capture.`)
       }
       refreshJobs()
     } catch (err) {
       if (!silent) {
-        toast.error(`Full review capture failed: ${err.message}`)
+        toast.error(`${reviewMode === 'lite' ? 'Lite' : 'Full'} review capture failed: ${err.message}`)
       }
     } finally {
       setReviewExpandState(listingKey, false)
     }
+  }
+
+  const queueFullReviews = async (listing, options = {}) =>
+    queueReviewCapture(listing, { ...options, mode: 'full' })
+
+  const queueLiteReviews = async (listing, options = {}) =>
+    queueReviewCapture(listing, { ...options, mode: 'lite' })
+
+  const queueSelectedCompareReviews = async (mode) => {
+    const targets = selectedCompareListings
+    if (!targets.length) {
+      toast.error('Select at least one ingested listing.')
+      return
+    }
+    for (const listing of targets) {
+      await queueReviewCapture(listing, { mode, silent: true })
+    }
+    const label = mode === 'lite' ? 'lite reviews' : 'full reviews'
+    toast.message(`Queued ${label} for ${targets.length} listing${targets.length === 1 ? '' : 's'}.`)
   }
 
   const upgradeCompareReviews = async () => {
@@ -2472,24 +2493,33 @@ export default function App() {
                       ))}
                     </div>
                   )}
-                  {detailsCoverageLabel && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <Badge variant="outline">{detailsCoverageLabel}</Badge>
-                      {detailsNeedsFull && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => queueFullReviews(detailsListing)}
-                          disabled={detailsReviewExpanding}
-                        >
-                          {detailsReviewExpanding ? (
-                            <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                          ) : null}
-                          Fetch full reviews
-                        </Button>
-                      )}
-                    </div>
-                  )}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {detailsCoverageLabel && <Badge variant="outline">{detailsCoverageLabel}</Badge>}
+                    {getListingUrl(detailsListing) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => queueLiteReviews(detailsListing)}
+                        disabled={detailsReviewExpanding}
+                      >
+                        {detailsReviewExpanding ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+                        Fetch Lite reviews
+                      </Button>
+                    )}
+                    {detailsNeedsFull && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => queueFullReviews(detailsListing)}
+                        disabled={detailsReviewExpanding}
+                      >
+                        {detailsReviewExpanding ? (
+                          <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                        ) : null}
+                        Fetch full reviews
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="rounded-xl border border-border/60 bg-background/60 p-3">
@@ -3086,6 +3116,12 @@ export default function App() {
                 <Button size="sm" onClick={() => openCompareSelection()}>
                   Compare
                 </Button>
+                <Button variant="outline" size="sm" onClick={() => queueSelectedCompareReviews('lite')}>
+                  Fetch Lite reviews
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => queueSelectedCompareReviews('full')}>
+                  Fetch Full reviews
+                </Button>
                 <Button variant="ghost" size="sm" onClick={clearCompare}>
                   Clear
                 </Button>
@@ -3374,6 +3410,15 @@ export default function App() {
                                 onClick={() => openListingDetails(listing)}
                               >
                                 Details
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => queueLiteReviews(listing)}
+                                disabled={expanding}
+                              >
+                                {expanding ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+                                Lite reviews
                               </Button>
                               {showFullReviews && (
                                 <Button
