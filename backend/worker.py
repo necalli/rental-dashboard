@@ -1,7 +1,9 @@
 ﻿import logging
 import os
 import socket
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from services.job_runner import JobRunner
 from services.playwright_capture import PlaywrightCapture
@@ -72,6 +74,8 @@ def main() -> None:
     listing_networkidle_fallback_ms = int(
         os.getenv("RENTAL_CAPTURE_LISTING_NETWORKIDLE_FALLBACK_MS", "700")
     )
+    reuse_browser = _parse_bool(os.getenv("RENTAL_PLAYWRIGHT_REUSE_BROWSER", "false"), False)
+    listing_concurrency = max(1, int(os.getenv("RENTAL_WORKER_LISTING_CONCURRENCY", "1")))
     capture_log_metrics = _parse_bool(os.getenv("RENTAL_CAPTURE_LOG_METRICS", "false"), False)
     review_only_env = os.getenv("RENTAL_CAPTURE_REVIEW_ONLY")
     if review_only_env is None or review_only_env == "":
@@ -81,66 +85,118 @@ def main() -> None:
     capture_debug_screenshots = _parse_bool(os.getenv("RENTAL_CAPTURE_DEBUG_SCREENSHOTS", "false"), False)
 
     storage = Storage()
-    capture = PlaywrightCapture(
-        headless=headless,
-        navigation_timeout_ms=timeout_ms,
-        wait_after_load_ms=wait_after_ms,
-        capture_html=capture_html,
-        response_domain_allowlist=response_domains,
-        response_url_allowlist=response_url_allowlist,
-        max_responses=max_responses,
-        capture_timeout_ms=capture_timeout_ms,
-        review_scroll_steps=review_scroll_steps,
-        review_scroll_pulses=review_scroll_pulses,
-        review_wait_ms=review_wait_ms,
-        review_pagination_passes=review_pagination_passes,
-        review_page_wait_ms=review_page_wait_ms,
-        lite_capture_strategy=lite_capture_strategy,
-        lite_adaptive_max_pulses=lite_adaptive_max_pulses,
-        lite_review_target=review_limit_default,
-        review_only=review_only,
-        debug=capture_debug,
-        debug_screenshots=capture_debug_screenshots,
-        block_resources=capture_block_resources,
-        blocked_resource_types=blocked_resource_types,
-        blocked_url_patterns=blocked_url_patterns,
-        adaptive_search_navigation=adaptive_search_navigation,
-        adaptive_search_html_wait=adaptive_search_html_wait,
-        search_response_target=search_response_target,
-        adaptive_wait_poll_ms=adaptive_wait_poll_ms,
-        search_networkidle_fallback_ms=search_networkidle_fallback_ms,
-        adaptive_listing_navigation=adaptive_listing_navigation,
-        listing_response_target=listing_response_target,
-        listing_navigation_wait_cap_ms=listing_navigation_wait_cap_ms,
-        listing_networkidle_fallback_ms=listing_networkidle_fallback_ms,
-    )
-    rate_limiter = RateLimiter(min_interval_ms=min_interval_ms)
-    runner = JobRunner(
-        storage,
-        capture,
-        rate_limiter=rate_limiter,
-        allowed_domains=allowed_domains,
-        capture_ttl_seconds=capture_ttl,
-        include_reviews_default=include_reviews_default,
-        review_mode_default=review_mode_default,
-        review_limit_default=review_limit_default,
-        capture_log_metrics=capture_log_metrics,
-    )
+    capture_kwargs = {
+        "headless": headless,
+        "navigation_timeout_ms": timeout_ms,
+        "wait_after_load_ms": wait_after_ms,
+        "capture_html": capture_html,
+        "response_domain_allowlist": response_domains,
+        "response_url_allowlist": response_url_allowlist,
+        "max_responses": max_responses,
+        "capture_timeout_ms": capture_timeout_ms,
+        "review_scroll_steps": review_scroll_steps,
+        "review_scroll_pulses": review_scroll_pulses,
+        "review_wait_ms": review_wait_ms,
+        "review_pagination_passes": review_pagination_passes,
+        "review_page_wait_ms": review_page_wait_ms,
+        "lite_capture_strategy": lite_capture_strategy,
+        "lite_adaptive_max_pulses": lite_adaptive_max_pulses,
+        "lite_review_target": review_limit_default,
+        "review_only": review_only,
+        "debug": capture_debug,
+        "debug_screenshots": capture_debug_screenshots,
+        "block_resources": capture_block_resources,
+        "blocked_resource_types": blocked_resource_types,
+        "blocked_url_patterns": blocked_url_patterns,
+        "adaptive_search_navigation": adaptive_search_navigation,
+        "adaptive_search_html_wait": adaptive_search_html_wait,
+        "search_response_target": search_response_target,
+        "adaptive_wait_poll_ms": adaptive_wait_poll_ms,
+        "search_networkidle_fallback_ms": search_networkidle_fallback_ms,
+        "adaptive_listing_navigation": adaptive_listing_navigation,
+        "listing_response_target": listing_response_target,
+        "listing_navigation_wait_cap_ms": listing_navigation_wait_cap_ms,
+        "listing_networkidle_fallback_ms": listing_networkidle_fallback_ms,
+        "reuse_browser": reuse_browser,
+    }
+
+    def _make_runner() -> JobRunner:
+        return JobRunner(
+            Storage(),
+            PlaywrightCapture(**capture_kwargs),
+            rate_limiter=RateLimiter(min_interval_ms=min_interval_ms),
+            allowed_domains=allowed_domains,
+            capture_ttl_seconds=capture_ttl,
+            include_reviews_default=include_reviews_default,
+            review_mode_default=review_mode_default,
+            review_limit_default=review_limit_default,
+            capture_log_metrics=capture_log_metrics,
+        )
+
+    runner = _make_runner()
 
     logging.info(
-        "Worker started id=%s poll_interval=%.2fs job_types=%s heartbeat_seconds=%s",
+        "Worker started id=%s poll_interval=%.2fs job_types=%s heartbeat_seconds=%s listing_concurrency=%s reuse_browser=%s",
         worker_id,
         poll_interval,
         worker_job_types or ["*"],
         heartbeat_seconds,
+        listing_concurrency,
+        reuse_browser,
     )
     processed_count = 0
     success_count = 0
     failure_count = 0
     idle_poll_count = 0
     last_heartbeat = time.monotonic()
+    executor = ThreadPoolExecutor(max_workers=listing_concurrency) if listing_concurrency > 1 else None
+    active_listing_futures = {}
+    thread_state = threading.local()
+    allows_listing_parallel = (
+        listing_concurrency > 1
+        and (not worker_job_types or "*" in worker_job_types or "listing_ingest" in worker_job_types)
+    )
+    non_listing_job_types = None
+    if allows_listing_parallel:
+        if not worker_job_types or "*" in worker_job_types:
+            non_listing_job_types = ["search", "listing_enrich", "listing_compare"]
+        else:
+            non_listing_job_types = [item for item in worker_job_types if item != "listing_ingest"]
+
+    def _thread_runner() -> JobRunner:
+        runner_for_thread = getattr(thread_state, "runner", None)
+        if runner_for_thread is None:
+            runner_for_thread = _make_runner()
+            thread_state.runner = runner_for_thread
+        return runner_for_thread
+
+    def _process_listing_job_in_thread(job_payload: dict) -> bool:
+        return _thread_runner().process_job(job_payload)
+
+    def _reap_listing_futures() -> None:
+        nonlocal success_count, failure_count
+        if not active_listing_futures:
+            return
+        for future, future_job in list(active_listing_futures.items()):
+            if not future.done():
+                continue
+            try:
+                success = bool(future.result())
+            except Exception:
+                logging.exception(
+                    "Parallel listing ingest future failed job_id=%s",
+                    future_job.get("job_id"),
+                )
+                success = False
+            if success:
+                success_count += 1
+            else:
+                failure_count += 1
+            active_listing_futures.pop(future, None)
 
     while True:
+        _reap_listing_futures()
+
         if stale_job_seconds > 0:
             recovered = storage.recover_stale_jobs(
                 stale_after_seconds=stale_job_seconds,
@@ -149,7 +205,31 @@ def main() -> None:
             if recovered:
                 logging.warning("Worker id=%s recovered %s stale running job(s)", worker_id, recovered)
 
-        job = storage.claim_next_job(job_types=worker_job_types or None, worker_id=worker_id)
+        submitted_listing = False
+        if executor and allows_listing_parallel:
+            while len(active_listing_futures) < listing_concurrency:
+                listing_job = storage.claim_next_job(job_types=["listing_ingest"], worker_id=worker_id)
+                if not listing_job:
+                    break
+                processed_count += 1
+                submitted_listing = True
+                logging.info(
+                    "Worker id=%s claimed listing job_id=%s for parallel ingest",
+                    worker_id,
+                    listing_job.get("job_id"),
+                )
+                storage.heartbeat_job(str(listing_job.get("job_id") or ""), worker_id=worker_id)
+                future = executor.submit(_process_listing_job_in_thread, listing_job)
+                active_listing_futures[future] = listing_job
+
+        claim_types = worker_job_types or None
+        if executor and allows_listing_parallel:
+            claim_types = non_listing_job_types or []
+        job = (
+            storage.claim_next_job(job_types=claim_types or None, worker_id=worker_id)
+            if claim_types is None or len(claim_types) > 0
+            else None
+        )
         if job:
             processed_count += 1
             logging.info(
@@ -168,17 +248,19 @@ def main() -> None:
                 time.sleep(error_backoff_ms / 1000)
         else:
             idle_poll_count += 1
-            time.sleep(poll_interval)
+            time.sleep(min(0.25, poll_interval) if active_listing_futures or submitted_listing else poll_interval)
 
         if heartbeat_seconds > 0 and (time.monotonic() - last_heartbeat) >= heartbeat_seconds:
+            _reap_listing_futures()
             counts = storage.get_job_status_counts()
             logging.info(
-                "Worker heartbeat id=%s processed=%s success=%s failed=%s idle_polls=%s queue=%s",
+                "Worker heartbeat id=%s processed=%s success=%s failed=%s idle_polls=%s active_listing=%s queue=%s",
                 worker_id,
                 processed_count,
                 success_count,
                 failure_count,
                 idle_poll_count,
+                len(active_listing_futures),
                 counts,
             )
             last_heartbeat = time.monotonic()

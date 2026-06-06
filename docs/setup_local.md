@@ -86,10 +86,30 @@ For parallel capture, start additional workers with unique IDs:
 RENTAL_WORKER_ID=local-w2 python worker.py
 ```
 
+For bounded parallel listing ingest inside one worker, keep the value conservative:
+
+```bash
+RENTAL_WORKER_LISTING_CONCURRENCY=2 python worker.py
+```
+
+To reduce repeated browser startup overhead while testing, enable worker-owned browser reuse:
+
+```bash
+RENTAL_PLAYWRIGHT_REUSE_BROWSER=true python worker.py
+```
+
 Windows PowerShell:
 
 ```powershell
 $env:RENTAL_WORKER_ID = "local-w2"
+python worker.py
+```
+
+For the single-worker performance options in PowerShell:
+
+```powershell
+$env:RENTAL_WORKER_LISTING_CONCURRENCY = "2"
+$env:RENTAL_PLAYWRIGHT_REUSE_BROWSER = "true"
 python worker.py
 ```
 

@@ -55,6 +55,7 @@ class ApiCaptureOverrideTests(unittest.TestCase):
                 json={
                     "url": "https://www.airbnb.com/rooms/123",
                     "review_mode": "lite",
+                    "disable_lite_retry": True,
                     "capture_timeout_ms": 9999999,
                     "review_pagination_passes": 0,
                     "lite_capture_strategy": "normal",
@@ -66,6 +67,7 @@ class ApiCaptureOverrideTests(unittest.TestCase):
         self.assertEqual(payload.get("capture_timeout_ms"), 600000)
         self.assertEqual(payload.get("review_pagination_passes"), 1)
         self.assertEqual(payload.get("lite_capture_strategy"), "normal")
+        self.assertEqual(payload.get("disable_lite_retry"), True)
 
     def test_listing_ingest_rejects_airbnb_search_urls(self) -> None:
         client = app_module.app.test_client()
@@ -330,6 +332,13 @@ class PlaywrightCaptureOverrideTests(unittest.TestCase):
         self.assertEqual(out.get("review_wait_ms"), 5000)
         self.assertEqual(out.get("review_pagination_passes"), 6)
         self.assertEqual(out.get("review_page_wait_ms"), 1500)
+
+    @unittest.skipIf(PlaywrightCapture is None, "Playwright dependency is unavailable")
+    def test_reuse_browser_flag_defaults_off_and_can_be_enabled(self) -> None:
+        self.assertFalse(PlaywrightCapture().reuse_browser)
+        capture = PlaywrightCapture(reuse_browser=True)
+        self.assertTrue(capture.reuse_browser)
+        capture.close()
 
     @unittest.skipIf(PlaywrightCapture is None, "Playwright dependency is unavailable")
     def test_navigation_and_lite_settle_budgets(self) -> None:

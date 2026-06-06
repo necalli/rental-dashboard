@@ -75,6 +75,7 @@ class SearchIngestPreferenceTests(unittest.TestCase):
                 "run_id": "run-1",
                 "listing_ids": ["listing-1"],
                 "review_mode": "lite",
+                "disable_lite_retry": True,
             },
         )
 
@@ -91,6 +92,7 @@ class SearchIngestPreferenceTests(unittest.TestCase):
         self.assertEqual(payload.get("check_in"), "2026-07-26")
         self.assertEqual(payload.get("check_out"), "2026-07-30")
         self.assertTrue((payload.get("search_date_context") or {}).get("used_listing_dates"))
+        self.assertEqual(payload.get("disable_lite_retry"), True)
 
 
 if __name__ == "__main__":

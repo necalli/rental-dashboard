@@ -972,7 +972,8 @@ export default function App() {
       toast.error('Add at least one listing URL')
       return 0
     }
-    const reviewMode = settings.reviewMode || 'lite'
+    const bulkStrategy = settings.bulkIngestStrategy || 'review_sample'
+    const reviewMode = bulkStrategy === 'details_first' ? 'none' : settings.reviewMode || 'lite'
     const results = []
     for (const url of listingUrls) {
       const response = await requestJson('/api/v1/listings/ingest', {
@@ -982,7 +983,9 @@ export default function App() {
           url,
           review_mode: reviewMode,
           review_limit: reviewMode === 'lite' ? Number(settings.liteReviewCount) || 24 : undefined,
-          ...buildCaptureOverrides(settings),
+          disable_lite_retry:
+            reviewMode === 'lite' && settings.bulkDisableLiteRetry ? true : undefined,
+          ...buildCaptureOverrides(settings, { includeReviews: reviewMode !== 'none' }),
         }),
       })
       results.push(response.job?.job_id)
@@ -1104,12 +1107,15 @@ export default function App() {
     if (!selectedRunId || listingIds.length === 0) return
     setIngesting(true)
     try {
-      const reviewMode = settings.reviewMode || 'lite'
+      const bulkStrategy = settings.bulkIngestStrategy || 'review_sample'
+      const reviewMode = bulkStrategy === 'details_first' ? 'none' : settings.reviewMode || 'lite'
       const payload = {
         run_id: selectedRunId,
         listing_ids: listingIds,
         review_mode: reviewMode,
-        ...buildCaptureOverrides(settings),
+        disable_lite_retry:
+          reviewMode === 'lite' && settings.bulkDisableLiteRetry ? true : undefined,
+        ...buildCaptureOverrides(settings, { includeReviews: reviewMode !== 'none' }),
       }
       if (reviewMode === 'lite') {
         payload.review_limit = Number(settings.liteReviewCount) || 24
@@ -1782,6 +1788,39 @@ export default function App() {
                   Adaptive Lite adds a small bounded recovery window when the first review sample is below target.
                 </p>
               </div>
+              <Separator />
+              <div className="grid gap-2">
+                <Label>Bulk ingest strategy</Label>
+                <select
+                  className="h-10 rounded-md border border-border bg-background px-3"
+                  value={settings.bulkIngestStrategy || 'review_sample'}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, bulkIngestStrategy: event.target.value }))
+                  }
+                >
+                  <option value="review_sample">Details + selected review mode</option>
+                  <option value="details_first">Fast details first</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Fast details first captures listing facts now and leaves review capture for later enrichment.
+                </p>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Skip low-coverage Lite retry in bulk ingest</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Speeds up large batches, but some Lite review samples may remain partial.
+                  </p>
+                </div>
+                <Checkbox
+                  checked={settings.bulkDisableLiteRetry}
+                  disabled={(settings.bulkIngestStrategy || 'review_sample') === 'details_first'}
+                  onCheckedChange={(checked) =>
+                    setSettings((prev) => ({ ...prev, bulkDisableLiteRetry: Boolean(checked) }))
+                  }
+                />
+              </div>
+              <Separator />
               <div className="flex items-center justify-between">
                 <Label>Show compare disclaimer for lite reviews</Label>
                 <Checkbox
@@ -2711,7 +2750,9 @@ export default function App() {
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Ingest selected queues full listing captures (details + reviews) for checked cards.
+                      {(settings.bulkIngestStrategy || 'review_sample') === 'details_first'
+                        ? 'Ingest selected queues fast detail captures; fetch reviews later for comparisons.'
+                        : 'Ingest selected queues listing details with the selected review capture mode.'}
                     </p>
                   </div>
                 )}

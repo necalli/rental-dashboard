@@ -485,6 +485,8 @@ def ingest_listing():
         job_payload["review_only"] = bool(review_only)
     if review_limit is not None:
         job_payload["review_limit"] = int(review_limit)
+    if payload.get("disable_lite_retry") is not None:
+        job_payload["disable_lite_retry"] = _to_bool(payload.get("disable_lite_retry"), False)
     job_payload.update(_extract_capture_overrides(payload, include_review_controls=True))
     if force:
         job_payload["force"] = True
@@ -591,6 +593,8 @@ def ingest_search_listings():
             job_payload["review_only"] = bool(review_only)
         if review_limit is not None:
             job_payload["review_limit"] = int(review_limit)
+        if payload.get("disable_lite_retry") is not None:
+            job_payload["disable_lite_retry"] = _to_bool(payload.get("disable_lite_retry"), False)
         if preference_context:
             job_payload["preference_context"] = preference_context
         job_payload.update(capture_overrides)

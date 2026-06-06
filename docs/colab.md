@@ -58,3 +58,4 @@ Open the frontend URL.
 - Backend and workers remain inside the Colab runtime.
 - The generated `frontend/.env.local` contains `VITE_API_BASE_URL=.` so frontend `/api` calls route through Vite's local proxy to the backend.
 - Runtime databases and captures live only in `/content/rental-dashboard/backend/data` and `/content/rental-dashboard/backend/raw` unless you explicitly copy them elsewhere.
+- Performance testing options are opt-in. Set `RENTAL_WORKER_LISTING_CONCURRENCY=2` or `3` for bounded parallel listing ingest, and set `RENTAL_PLAYWRIGHT_REUSE_BROWSER=true` to reuse a worker-owned browser between captures. Keep these conservative in Colab to avoid memory pressure or site throttling.

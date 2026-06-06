@@ -8,6 +8,8 @@ const defaultSettings = {
   reviewMode: 'lite',
   liteCaptureStrategy: 'adaptive',
   liteReviewCount: 24,
+  bulkIngestStrategy: 'review_sample',
+  bulkDisableLiteRetry: false,
   compareDisclaimer: true,
   compareUseMemory: false,
   compareMemoryFocus: '',

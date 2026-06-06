@@ -848,6 +848,7 @@ class JobRunner:
         if review_mode == "lite" and review_limit:
             capture_overrides["lite_review_target"] = int(review_limit)
         job_metrics["capture_overrides"] = capture_overrides
+        job_metrics["disable_lite_retry"] = bool(_coerce_bool(payload.get("disable_lite_retry")))
 
         if not payload.get("force"):
             cached = self._check_cached_listing(
@@ -937,7 +938,7 @@ class JobRunner:
             review_limit=review_limit,
             capture_metrics=metrics,
             default_limit=self.review_limit_default,
-        ):
+        ) and not _coerce_bool(payload.get("disable_lite_retry")):
             retry_attempted = True
             retry_reason = "lite_review_capture_low_coverage"
             retry_overrides = _build_conservative_retry_overrides(capture_overrides)

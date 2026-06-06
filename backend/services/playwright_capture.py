@@ -1,10 +1,13 @@
 ﻿import asyncio
 import base64
+import atexit
 import json
 import os
 import re
+import threading
 import time
 import uuid
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -57,6 +60,7 @@ class PlaywrightCapture:
         listing_response_target: int = 12,
         listing_navigation_wait_cap_ms: int = 1800,
         listing_networkidle_fallback_ms: int = 700,
+        reuse_browser: bool = False,
     ) -> None:
         self.headless = headless
         self.navigation_timeout_ms = navigation_timeout_ms
@@ -96,6 +100,7 @@ class PlaywrightCapture:
         self.listing_response_target = max(1, int(listing_response_target))
         self.listing_navigation_wait_cap_ms = max(300, int(listing_navigation_wait_cap_ms))
         self.listing_networkidle_fallback_ms = max(100, int(listing_networkidle_fallback_ms))
+        self.reuse_browser = bool(reuse_browser)
         self._debug_review_click_target: Optional[str] = None
         self._debug_pagination: List[Dict[str, Any]] = []
         self._debug_translation_attempts: int = 0
@@ -105,6 +110,85 @@ class PlaywrightCapture:
         self._debug_screenshots: List[str] = []
         self._capture_key: Optional[str] = None
         self._debug_last_scroll_target: Optional[Dict[str, Any]] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+        self._loop_lock = threading.Lock()
+        self._playwright = None
+        self._browser = None
+        self._closed = False
+        if self.reuse_browser:
+            atexit.register(self.close)
+
+    def _ensure_persistent_loop(self) -> asyncio.AbstractEventLoop:
+        with self._loop_lock:
+            if self._loop and self._loop.is_running() and not self._closed:
+                return self._loop
+            self._closed = False
+            ready = threading.Event()
+
+            def _run_loop() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._loop = loop
+                ready.set()
+                loop.run_forever()
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.close()
+
+            self._loop_thread = threading.Thread(
+                target=_run_loop,
+                name="playwright-capture-loop",
+                daemon=True,
+            )
+            self._loop_thread.start()
+        ready.wait(timeout=10)
+        if not self._loop:
+            raise RuntimeError("Failed to start persistent Playwright loop")
+        return self._loop
+
+    async def _get_reused_browser(self):
+        if self._playwright is None:
+            self._playwright = await async_playwright().start()
+        if self._browser is None or not self._browser.is_connected():
+            self._browser = await self._playwright.chromium.launch(headless=self.headless)
+        return self._browser
+
+    async def _close_reused_resources(self) -> None:
+        browser = self._browser
+        playwright = self._playwright
+        self._browser = None
+        self._playwright = None
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        if not self.reuse_browser:
+            return
+        loop = self._loop
+        if not loop or not loop.is_running():
+            return
+        self._closed = True
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._close_reused_resources(), loop)
+            future.result(timeout=10)
+        except Exception:
+            pass
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except Exception:
+            pass
 
     def _coerce_override_int(
         self,
@@ -420,8 +504,20 @@ class PlaywrightCapture:
         if timeout_ms is None:
             timeout_ms = int(self.capture_timeout_ms)
         try:
+            if self.reuse_browser:
+                loop = self._ensure_persistent_loop()
+                future = asyncio.run_coroutine_threadsafe(
+                    asyncio.wait_for(coro, timeout=timeout_ms / 1000),
+                    loop,
+                )
+                return future.result(timeout=(timeout_ms / 1000) + 5)
             return asyncio.run(asyncio.wait_for(coro, timeout=timeout_ms / 1000))
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, FutureTimeoutError):
+            if "future" in locals():
+                try:
+                    future.cancel()
+                except Exception:
+                    pass
             duration_ms = int((time.monotonic() - start) * 1000)
             return {
                 "url": url,
@@ -517,8 +613,15 @@ class PlaywrightCapture:
         review_mode = (review_mode or "none").lower()
 
         browser_setup_start = time.monotonic()
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=self.headless)
+        context = None
+        browser = None
+        playwright = None
+        try:
+            if self.reuse_browser:
+                browser = await self._get_reused_browser()
+            else:
+                playwright = await async_playwright().start()
+                browser = await playwright.chromium.launch(headless=self.headless)
             context = await browser.new_context()
             page = await context.new_page()
             page.set_default_timeout(self.navigation_timeout_ms)
@@ -713,9 +816,23 @@ class PlaywrightCapture:
                     errors.append(f"Debug capture failed: {exc}")
                 _mark_step("debug_capture_ms", debug_capture_start)
 
+        finally:
             cleanup_start = time.monotonic()
-            await context.close()
-            await browser.close()
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            if not self.reuse_browser and browser is not None:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if playwright is not None:
+                try:
+                    await playwright.stop()
+                except Exception:
+                    pass
             _mark_step("cleanup_ms", cleanup_start)
 
         duration_ms = int((time.monotonic() - start) * 1000)
