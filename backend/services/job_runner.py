@@ -20,10 +20,13 @@ from .search_schema import normalize_search_listing, validate_search_listing
 from .personality_rag import PersonalityRagService
 from .llm_enrichment import (
     COMPARISON_PROMPT_VERSION,
+    PHOTO_FIT_PROMPT_VERSION,
     PROMPT_VERSION as LLM_PROMPT_VERSION,
     build_comparison_request,
+    build_photo_fit_request,
     build_summary_request,
     generate_listing_comparison,
+    generate_listing_photo_fit,
     generate_listing_summary,
 )
 from .fx_rates import get_fx_rate
@@ -1170,7 +1173,7 @@ class JobRunner:
         if not listing_id:
             raise ValueError("listing_id is required")
         kind = payload.get("kind") or "listing_summary"
-        if kind != "listing_summary":
+        if kind not in {"listing_summary", "listing_photo_fit"}:
             raise ValueError(f"Unsupported enrichment kind: {kind}")
 
         listing = self.storage.get_listing(listing_id)
@@ -1178,19 +1181,28 @@ class JobRunner:
             raise ValueError("Listing not found")
         reviews = self.storage.list_reviews(listing_id, limit=200)
         model = payload.get("model")
-        model, input_hash = build_summary_request(listing, reviews, model=model)
+        max_images = _coerce_int_range(payload.get("max_images"), 1, 16)
+        if kind == "listing_photo_fit":
+            model, input_hash = build_photo_fit_request(listing, model=model, max_images=max_images)
+            prompt_version = PHOTO_FIT_PROMPT_VERSION
+        else:
+            model, input_hash = build_summary_request(listing, reviews, model=model)
+            prompt_version = LLM_PROMPT_VERSION
         if payload.get("input_hash") and payload.get("input_hash") != input_hash:
             LOGGER.info("Listing %s input hash changed since enqueue", listing_id)
 
         llm_started = time.monotonic()
-        output = generate_listing_summary(listing, reviews, model=model)
+        if kind == "listing_photo_fit":
+            output = generate_listing_photo_fit(listing, model=model, max_images=max_images)
+        else:
+            output = generate_listing_summary(listing, reviews, model=model)
         llm_ms = _elapsed_ms(llm_started)
         persist_started = time.monotonic()
         enrichment_id = self.storage.add_enrichment(
             listing_id,
             kind,
             model,
-            LLM_PROMPT_VERSION,
+            prompt_version,
             input_hash,
             output,
         )
@@ -1202,6 +1214,8 @@ class JobRunner:
                 "kind": kind,
                 "model": model,
                 "reviews_used": len(reviews),
+                "photo_count": len(listing.get("photos") or []) if kind == "listing_photo_fit" else None,
+                "max_images": max_images if kind == "listing_photo_fit" else None,
                 "llm_ms": llm_ms,
                 "persist_ms": persist_ms,
             }
@@ -1241,6 +1255,17 @@ class JobRunner:
         context["focus"] = focus
         context["limit"] = int(limit)
         return context
+
+    def _photo_fit_context_for_listings(self, listings: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        photo_fit_by_listing: Dict[str, Dict[str, Any]] = {}
+        for listing in listings:
+            listing_id = str(listing.get("id") or listing.get("listing_id") or "").strip()
+            if not listing_id:
+                continue
+            fit = self.storage.get_latest_enrichment(listing_id, "listing_photo_fit")
+            if isinstance(fit, dict):
+                photo_fit_by_listing[listing_id] = fit
+        return photo_fit_by_listing
 
     def _process_listing_compare(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         metrics: Dict[str, Any] = {"kind": "listing_compare"}
@@ -1282,11 +1307,14 @@ class JobRunner:
                 )
 
         memory_context = self._build_compare_memory_context(listings, payload)
+        use_photo_fit = _coerce_bool(payload.get("use_photo_fit"))
+        photo_fit_by_listing = self._photo_fit_context_for_listings(listings) if use_photo_fit else None
         model = payload.get("model")
         model, input_hash = build_comparison_request(
             listings,
             reviews_by_listing,
             memory_context=memory_context,
+            photo_fit_by_listing=photo_fit_by_listing,
             model=model,
         )
         compare_key = f"compare:{input_hash}"
@@ -1296,6 +1324,7 @@ class JobRunner:
             listings,
             reviews_by_listing,
             memory_context=memory_context,
+            photo_fit_by_listing=photo_fit_by_listing,
             model=model,
         )
         llm_ms = _elapsed_ms(llm_started)
@@ -1319,6 +1348,8 @@ class JobRunner:
                 "min_review_coverage": float(min_review_coverage),
                 "use_personality_rag": bool(memory_context and memory_context.get("enabled")),
                 "memory_hit_count": len(memory_context.get("hits") or []) if memory_context else 0,
+                "use_photo_fit": bool(use_photo_fit),
+                "photo_fit_count": len(photo_fit_by_listing or {}),
                 "llm_ms": llm_ms,
                 "persist_ms": persist_ms,
             }

@@ -129,6 +129,9 @@ export default function App() {
   const [llmSummary, setLlmSummary] = useState(null)
   const [llmSummaryStatus, setLlmSummaryStatus] = useState('idle')
   const [llmSummaryError, setLlmSummaryError] = useState(null)
+  const [photoFit, setPhotoFit] = useState(null)
+  const [photoFitStatus, setPhotoFitStatus] = useState('idle')
+  const [photoFitError, setPhotoFitError] = useState(null)
   const [reviewExpanding, setReviewExpanding] = useState(() => new Set())
   const [compareOpen, setCompareOpen] = useState(false)
   const [compareDrawerWidth, setCompareDrawerWidth] = useState(() => {
@@ -300,6 +303,8 @@ export default function App() {
     } finally {
       setDetailsReviewsLoading(false)
     }
+    refreshListingSummary(listingId, { silent: true, keepQueuedOn404: true })
+    refreshListingPhotoFit(listingId, { silent: true, keepQueuedOn404: true })
   }
 
   const refreshListingSummary = async (listingId, options = {}) => {
@@ -331,6 +336,35 @@ export default function App() {
     }
   }
 
+  const refreshListingPhotoFit = async (listingId, options = {}) => {
+    if (!listingId) return
+    const { silent = false, keepQueuedOn404 = false } = options
+    setPhotoFit(null)
+    setPhotoFitError(null)
+    if (!silent) {
+      setPhotoFitStatus('loading')
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/enrich/listings/${listingId}/photo-fit`)
+      if (res.status === 404) {
+        if (!keepQueuedOn404) {
+          setPhotoFitStatus('idle')
+        }
+        return
+      }
+      if (!res.ok) {
+        const message = await res.text()
+        throw new Error(message || `Request failed (${res.status})`)
+      }
+      const data = await res.json()
+      setPhotoFit(data.photo_fit || null)
+      setPhotoFitStatus(data.photo_fit ? 'ready' : 'idle')
+    } catch (err) {
+      setPhotoFitError(err.message)
+      setPhotoFitStatus('error')
+    }
+  }
+
   const refreshListingDetails = async (listingId) => {
     if (!listingId) return
     setDetailsLoading(true)
@@ -352,6 +386,7 @@ export default function App() {
       setDetailsReviewsLoading(false)
     }
     refreshListingSummary(listingId, { silent: true, keepQueuedOn404: true })
+    refreshListingPhotoFit(listingId, { silent: true, keepQueuedOn404: true })
   }
 
   const generateListingSummary = async () => {
@@ -384,6 +419,39 @@ export default function App() {
       setLlmSummaryError(err.message)
       setLlmSummaryStatus('error')
       toast.error(`Summary failed: ${err.message}`)
+    }
+  }
+
+  const generateListingPhotoFit = async () => {
+    const listingId = getListingId(detailsListing)
+    if (!listingId) return
+    setPhotoFitError(null)
+    setPhotoFitStatus('submitting')
+    try {
+      const payload = {
+        sync: true,
+        max_images: 10,
+      }
+      if (settings.llmModelOverride) {
+        payload.model = settings.llmModelOverride
+      }
+      const response = await requestJson(`/api/v1/enrich/listings/${listingId}/photo-fit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (response.photo_fit) {
+        setPhotoFit(response.photo_fit)
+        setPhotoFitStatus('ready')
+        toast.success('Photo Fit generated.')
+        return
+      }
+      setPhotoFitStatus('queued')
+      toast.message('Photo Fit queued. This may take a moment.')
+    } catch (err) {
+      setPhotoFitError(err.message)
+      setPhotoFitStatus('error')
+      toast.error(`Photo Fit failed: ${err.message}`)
     }
   }
 
@@ -438,10 +506,15 @@ export default function App() {
             }
           }
         } else if (job.job_type === 'listing_enrich') {
-          toast.success('Listing summary ready.')
+          const kind = job.payload?.kind || 'listing_summary'
+          toast.success(kind === 'listing_photo_fit' ? 'Photo Fit ready.' : 'Listing summary ready.')
           const listingId = job.payload?.listing_id
           if (listingId && listingId === getListingId(detailsListing)) {
-            refreshListingSummary(listingId)
+            if (kind === 'listing_photo_fit') {
+              refreshListingPhotoFit(listingId)
+            } else {
+              refreshListingSummary(listingId)
+            }
           }
         } else if (job.job_type === 'listing_compare') {
           toast.success('Listing comparison ready.')
@@ -456,7 +529,7 @@ export default function App() {
     jobIndexRef.current = next
 
     const activeListingId = getListingId(detailsListing)
-    if (activeListingId && llmSummaryStatus !== 'ready') {
+    if (activeListingId && (llmSummaryStatus !== 'ready' || photoFitStatus !== 'ready')) {
       const completedSummary = jobs.find(
         (job) =>
           job.job_type === 'listing_enrich' &&
@@ -464,7 +537,11 @@ export default function App() {
           String(job.payload?.listing_id) === String(activeListingId)
       )
       if (completedSummary) {
-        refreshListingSummary(activeListingId)
+        if ((completedSummary.payload?.kind || 'listing_summary') === 'listing_photo_fit') {
+          refreshListingPhotoFit(activeListingId)
+        } else {
+          refreshListingSummary(activeListingId)
+        }
       }
     }
   }
@@ -1190,6 +1267,7 @@ export default function App() {
           min_review_coverage: Number.isFinite(minCoverageRatio) ? minCoverageRatio : undefined,
           model: settings.llmModelOverride || undefined,
           use_personality_rag: Boolean(settings.compareUseMemory),
+          use_photo_fit: Boolean(settings.compareUsePhotoFit),
           user_id: MEMORY_USER_ID,
           memory_focus: settings.compareUseMemory
             ? String(settings.compareMemoryFocus || '').trim() || undefined
@@ -2117,6 +2195,25 @@ export default function App() {
                   </div>
                 )}
               </div>
+              <div className="rounded-xl border border-border/60 bg-background/60 p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">Photo Fit analysis</p>
+                    <p className="text-xs text-muted-foreground">
+                      Adds cached visual-fit findings when selected listings have Photo Fit analysis.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs text-muted-foreground">Use Photo Fit</Label>
+                    <Checkbox
+                      checked={settings.compareUsePhotoFit}
+                      onCheckedChange={(checked) =>
+                        setSettings((prev) => ({ ...prev, compareUsePhotoFit: Boolean(checked) }))
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
               <div className="flex items-center gap-2">
                 <Button
                   onClick={generateComparison}
@@ -2209,6 +2306,63 @@ export default function App() {
                           <li key={`${item}-${idx}`}>{item}</li>
                         ))}
                       </ul>
+                    </div>
+                  )}
+                  {Array.isArray(compareSummary.visual_fit) && compareSummary.visual_fit.length > 0 && (
+                    <div className="rounded-xl border border-border/60 bg-background/60 p-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs uppercase text-muted-foreground">Visual Fit</p>
+                        <Badge variant="outline">Photo-based</Badge>
+                      </div>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        {compareSummary.visual_fit.map((item) => (
+                          <div
+                            key={`visual-fit-${item.listing_id}`}
+                            className="rounded-lg border border-border/50 bg-muted/20 p-3"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="font-semibold">
+                                {item.title ||
+                                  compareListingMap.get(String(item.listing_id))?.title ||
+                                  item.listing_id}
+                              </p>
+                              <Badge variant="outline">
+                                Confidence {item.photo_based_confidence || 'n/a'}
+                              </Badge>
+                            </div>
+                            {Array.isArray(item.visual_strengths) && item.visual_strengths.length > 0 && (
+                              <div className="mt-2">
+                                <p className="text-xs uppercase text-muted-foreground">Visual strengths</p>
+                                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                                  {item.visual_strengths.map((note, idx) => (
+                                    <li key={`${item.listing_id}-visual-strength-${idx}`}>{note}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {Array.isArray(item.visual_concerns) && item.visual_concerns.length > 0 && (
+                              <div className="mt-2">
+                                <p className="text-xs uppercase text-muted-foreground">Visual concerns</p>
+                                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                                  {item.visual_concerns.map((note, idx) => (
+                                    <li key={`${item.listing_id}-visual-concern-${idx}`}>{note}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {Array.isArray(item.evidence) && item.evidence.length > 0 && (
+                              <div className="mt-2">
+                                <p className="text-xs uppercase text-muted-foreground">Evidence</p>
+                                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                                  {item.evidence.map((note, idx) => (
+                                    <li key={`${item.listing_id}-visual-evidence-${idx}`}>{note}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {(compareSummary.memory_context_note ||
@@ -2504,6 +2658,82 @@ export default function App() {
                     )}
                   </div>
                 )}
+
+                <div className="rounded-xl border border-border/60 bg-background/60 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs uppercase text-muted-foreground">Photo Fit</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Optional visual analysis from representative listing photos.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={generateListingPhotoFit}
+                      disabled={
+                        photoFitStatus === 'submitting' ||
+                        photoFitStatus === 'loading' ||
+                        representativePhotos.length === 0
+                      }
+                    >
+                      {photoFitStatus === 'submitting' ? (
+                        <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                      ) : null}
+                      Analyze photos
+                    </Button>
+                  </div>
+                  {representativePhotos.length === 0 && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      No representative photos are available for analysis yet.
+                    </p>
+                  )}
+                  {photoFitStatus === 'loading' && (
+                    <p className="mt-2 text-xs text-muted-foreground">Checking cached Photo Fit...</p>
+                  )}
+                  {photoFitStatus === 'queued' && (
+                    <p className="mt-2 text-xs text-muted-foreground">Photo Fit queued. It will appear when ready.</p>
+                  )}
+                  {photoFitError && <p className="mt-2 text-xs text-destructive">{photoFitError}</p>}
+                  {photoFit && (
+                    <div className="mt-3 space-y-3 text-sm">
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="outline">
+                          Confidence {photoFit.photo_confidence || 'n/a'}
+                        </Badge>
+                        <Badge variant="outline">
+                          {photoFit.analyzed_photo_count || 0} analyzed
+                        </Badge>
+                      </div>
+                      <p>{photoFit.visual_summary}</p>
+                      {photoFit.coverage_note && (
+                        <p className="text-xs text-muted-foreground">{photoFit.coverage_note}</p>
+                      )}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {Array.isArray(photoFit.visual_strengths) && photoFit.visual_strengths.length > 0 && (
+                          <div>
+                            <p className="text-xs uppercase text-muted-foreground">Visual strengths</p>
+                            <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                              {photoFit.visual_strengths.map((item, idx) => (
+                                <li key={`photo-strength-${idx}`}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(photoFit.visual_concerns) && photoFit.visual_concerns.length > 0 && (
+                          <div>
+                            <p className="text-xs uppercase text-muted-foreground">Visual concerns</p>
+                            <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                              {photoFit.visual_concerns.map((item, idx) => (
+                                <li key={`photo-concern-${idx}`}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 <div className="rounded-xl border border-border/60 bg-background/60 p-3">
                   <p className="text-xs uppercase text-muted-foreground">Description</p>

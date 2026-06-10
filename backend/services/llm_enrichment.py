@@ -9,11 +9,14 @@ from pydantic import BaseModel, Field
 
 
 PROMPT_VERSION = "listing_summary_v1"
-COMPARISON_PROMPT_VERSION = "listing_comparison_v3"
+PHOTO_FIT_PROMPT_VERSION = "listing_photo_fit_v1"
+COMPARISON_PROMPT_VERSION = "listing_comparison_v4"
 DEFAULT_MODEL = os.getenv("RENTAL_LLM_MODEL", "gpt-5-mini")
 DEFAULT_TIMEOUT = int(os.getenv("RENTAL_LLM_TIMEOUT", "60"))
 DEFAULT_REASONING_EFFORT = os.getenv("RENTAL_LLM_REASONING_EFFORT", "").strip().lower()
 DEFAULT_MAX_OUTPUT_TOKENS = os.getenv("RENTAL_LLM_MAX_OUTPUT_TOKENS", "").strip()
+PHOTO_FIT_MAX_IMAGES = int(os.getenv("RENTAL_PHOTO_FIT_MAX_IMAGES", "10") or 10)
+PHOTO_FIT_IMAGE_DETAIL = os.getenv("RENTAL_PHOTO_FIT_IMAGE_DETAIL", "low").strip().lower() or "low"
 API_KEY = os.getenv("RENTAL_LLM_API_KEY", "")
 BASE_URL = os.getenv("RENTAL_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 
@@ -35,6 +38,24 @@ class ListingSummary(BaseModel):
     review_themes: List[ReviewTheme] = []
     coverage_note: Optional[str] = None
     confidence: str = Field(..., description="low | medium | high")
+
+
+class PhotoAreaObservation(BaseModel):
+    area: str
+    observations: List[str] = []
+    strengths: List[str] = []
+    concerns: List[str] = []
+    confidence: str = Field(..., description="low | medium | high")
+
+
+class ListingPhotoFit(BaseModel):
+    visual_summary: str
+    visual_strengths: List[str] = []
+    visual_concerns: List[str] = []
+    area_observations: List[PhotoAreaObservation] = []
+    photo_confidence: str = Field(..., description="low | medium | high")
+    analyzed_photo_count: int
+    coverage_note: Optional[str] = None
 
 
 class ComparisonWinner(BaseModel):
@@ -73,11 +94,21 @@ class ComparisonMemoryCitation(BaseModel):
     note: Optional[str] = None
 
 
+class ComparisonVisualFit(BaseModel):
+    listing_id: str
+    title: Optional[str] = None
+    visual_strengths: List[str] = []
+    visual_concerns: List[str] = []
+    photo_based_confidence: str = Field(..., description="low | medium | high")
+    evidence: List[str] = []
+
+
 class ListingComparison(BaseModel):
     summary: str
     winner: ComparisonWinner
     sections: List[ComparisonSection] = []
     listing_notes: List[ComparisonListingNotes] = []
+    visual_fit: List[ComparisonVisualFit] = []
     personalized_fit: List[ComparisonPersonalizedFit] = []
     memory_citations: List[ComparisonMemoryCitation] = []
     memory_context_note: Optional[str] = None
@@ -113,6 +144,107 @@ def _flatten_amenities(listing: Dict[str, Any], limit: int = 40) -> List[str]:
             if len(flattened) >= limit:
                 return flattened
     return flattened
+
+
+def _clean_photo_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        for key in ("text", "title", "caption", "localizedText", "value"):
+            text = _clean_photo_text(value.get(key))
+            if text:
+                return text
+        return None
+    if isinstance(value, list):
+        text = " ".join(part for part in (_clean_photo_text(item) for item in value) if part)
+        return text or None
+    text = str(value).strip()
+    return text or None
+
+
+def _photo_url(photo: Any) -> Optional[str]:
+    if isinstance(photo, str):
+        return photo.strip() or None
+    if not isinstance(photo, dict):
+        return None
+    for key in ("url", "baseUrl", "originalPicture", "picture", "large", "xlPicture", "thumbnailUrl"):
+        text = _clean_photo_text(photo.get(key))
+        if text:
+            return text
+    return None
+
+
+def _photo_area(photo: Any) -> str:
+    if not isinstance(photo, dict):
+        return "Unlabeled"
+    return _clean_photo_text(photo.get("room_or_area") or photo.get("roomType") or photo.get("roomTitle")) or "Unlabeled"
+
+
+def _photo_caption(photo: Any) -> Optional[str]:
+    if not isinstance(photo, dict):
+        return None
+    return _clean_photo_text(
+        photo.get("localized_caption") or photo.get("localizedCaption") or photo.get("caption") or photo.get("title")
+    )
+
+
+def _photo_area_counts(listing: Dict[str, Any]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    photos = listing.get("photos") if isinstance(listing.get("photos"), list) else []
+    for photo in photos:
+        if not _photo_url(photo):
+            continue
+        area = _photo_area(photo)
+        counts[area] = counts.get(area, 0) + 1
+    return counts
+
+
+def _select_photo_fit_photos(listing: Dict[str, Any], max_images: Optional[int] = None) -> List[Dict[str, Any]]:
+    max_images = max(1, int(max_images or PHOTO_FIT_MAX_IMAGES or 10))
+    selected: List[Dict[str, Any]] = []
+    seen_urls = set()
+    representatives = listing.get("representative_photos")
+    if isinstance(representatives, dict):
+        source = list(representatives.items())
+    else:
+        source = []
+
+    for area, photo in source:
+        url = _photo_url(photo)
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        selected.append(
+            {
+                "area": str(area or _photo_area(photo)),
+                "url": url,
+                "caption": _photo_caption(photo),
+                "position": photo.get("position") if isinstance(photo, dict) else None,
+            }
+        )
+        if len(selected) >= max_images:
+            return selected
+
+    photos = listing.get("photos") if isinstance(listing.get("photos"), list) else []
+    seen_areas = {item["area"] for item in selected}
+    for photo in photos:
+        url = _photo_url(photo)
+        area = _photo_area(photo)
+        if not url or url in seen_urls or area in seen_areas or area == "Unlabeled":
+            continue
+        seen_urls.add(url)
+        seen_areas.add(area)
+        selected.append(
+            {
+                "area": area,
+                "url": url,
+                "caption": _photo_caption(photo),
+                "position": photo.get("position") if isinstance(photo, dict) else None,
+            }
+        )
+        if len(selected) >= max_images:
+            return selected
+    return selected
 
 
 def build_listing_summary_input(listing: Dict[str, Any], reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -181,10 +313,32 @@ def build_listing_summary_input(listing: Dict[str, Any], reviews: List[Dict[str,
     }
 
 
+def build_photo_fit_input(
+    listing: Dict[str, Any],
+    *,
+    max_images: Optional[int] = None,
+) -> Dict[str, Any]:
+    summary_input = build_listing_summary_input(listing, [])
+    photos = listing.get("photos") if isinstance(listing.get("photos"), list) else []
+    selected = _select_photo_fit_photos(listing, max_images=max_images)
+    return {
+        "listing": summary_input.get("listing") or {},
+        "photo_count": len(photos),
+        "area_counts": _photo_area_counts(listing),
+        "selected_photos": selected,
+        "selection_policy": {
+            "source": "representative_photos_first",
+            "max_images": max(1, int(max_images or PHOTO_FIT_MAX_IMAGES or 10)),
+            "image_detail": PHOTO_FIT_IMAGE_DETAIL if PHOTO_FIT_IMAGE_DETAIL in {"low", "high", "auto"} else "low",
+        },
+    }
+
+
 def build_comparison_input(
     listings: List[Dict[str, Any]],
     reviews_by_listing: Dict[str, List[Dict[str, Any]]],
     memory_context: Optional[Dict[str, Any]] = None,
+    photo_fit_by_listing: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     payload: List[Dict[str, Any]] = []
     for listing in listings:
@@ -207,6 +361,21 @@ def build_comparison_input(
                 "reviews": review_samples,
             }
         )
+        photo_fit = (
+            photo_fit_by_listing.get(str(listing_id))
+            if isinstance(photo_fit_by_listing, dict)
+            else None
+        )
+        if isinstance(photo_fit, dict):
+            payload[-1]["photo_fit"] = {
+                "visual_summary": photo_fit.get("visual_summary"),
+                "visual_strengths": photo_fit.get("visual_strengths") or [],
+                "visual_concerns": photo_fit.get("visual_concerns") or [],
+                "area_observations": photo_fit.get("area_observations") or [],
+                "photo_confidence": photo_fit.get("photo_confidence"),
+                "analyzed_photo_count": photo_fit.get("analyzed_photo_count"),
+                "coverage_note": photo_fit.get("coverage_note"),
+            }
     output: Dict[str, Any] = {"listings": payload}
     if isinstance(memory_context, dict) and memory_context.get("enabled"):
         output["trip_memory_context"] = memory_context
@@ -261,6 +430,43 @@ def _summary_json_schema() -> Dict[str, Any]:
     }
 
 
+def _photo_fit_json_schema() -> Dict[str, Any]:
+    area_observation_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "area": {"type": "string"},
+            "observations": {"type": "array", "items": {"type": "string"}},
+            "strengths": {"type": "array", "items": {"type": "string"}},
+            "concerns": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "string"},
+        },
+        "required": ["area", "observations", "strengths", "concerns", "confidence"],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "visual_summary": {"type": "string"},
+            "visual_strengths": {"type": "array", "items": {"type": "string"}},
+            "visual_concerns": {"type": "array", "items": {"type": "string"}},
+            "area_observations": {"type": "array", "items": area_observation_schema},
+            "photo_confidence": {"type": "string"},
+            "analyzed_photo_count": {"type": "integer"},
+            "coverage_note": {"type": ["string", "null"]},
+        },
+        "required": [
+            "visual_summary",
+            "visual_strengths",
+            "visual_concerns",
+            "area_observations",
+            "photo_confidence",
+            "analyzed_photo_count",
+            "coverage_note",
+        ],
+    }
+
+
 def _comparison_json_schema() -> Dict[str, Any]:
     return {
         "type": "object",
@@ -304,6 +510,29 @@ def _comparison_json_schema() -> Dict[str, Any]:
                     "required": ["listing_id", "title", "pros", "cons", "watchouts"],
                 },
             },
+            "visual_fit": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "listing_id": {"type": "string"},
+                        "title": {"type": ["string", "null"]},
+                        "visual_strengths": {"type": "array", "items": {"type": "string"}},
+                        "visual_concerns": {"type": "array", "items": {"type": "string"}},
+                        "photo_based_confidence": {"type": "string"},
+                        "evidence": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": [
+                        "listing_id",
+                        "title",
+                        "visual_strengths",
+                        "visual_concerns",
+                        "photo_based_confidence",
+                        "evidence",
+                    ],
+                },
+            },
             "personalized_fit": {
                 "type": "array",
                 "items": {
@@ -344,6 +573,7 @@ def _comparison_json_schema() -> Dict[str, Any]:
             "winner",
             "sections",
             "listing_notes",
+            "visual_fit",
             "personalized_fit",
             "memory_citations",
             "memory_context_note",
@@ -384,19 +614,28 @@ def _parse_max_output_tokens() -> Optional[int]:
     return value if value > 0 else None
 
 
-def _call_openai_structured(model: str, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+def _call_openai_structured(
+    model: str,
+    system: str,
+    user: str,
+    schema: Dict[str, Any],
+    *,
+    schema_name: str = "listing_summary",
+    user_content: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     if not API_KEY:
         raise RuntimeError("RENTAL_LLM_API_KEY is not set")
+    content = user_content or [{"type": "input_text", "text": user}]
     payload = {
         "model": model,
         "input": [
             {"role": "system", "content": [{"type": "input_text", "text": system}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user}]},
+            {"role": "user", "content": content},
         ],
         "text": {
             "format": {
                 "type": "json_schema",
-                "name": "listing_summary",
+                "name": schema_name,
                 "schema": schema,
                 "strict": True,
             }
@@ -458,15 +697,74 @@ def generate_listing_summary(
     return validated.model_dump()
 
 
+def generate_listing_photo_fit(
+    listing: Dict[str, Any],
+    *,
+    model: Optional[str] = None,
+    max_images: Optional[int] = None,
+) -> Dict[str, Any]:
+    model = model or DEFAULT_MODEL
+    input_data = build_photo_fit_input(listing, max_images=max_images)
+    selected_photos = input_data.get("selected_photos") or []
+    if not selected_photos:
+        raise ValueError("No representative listing photos are available for analysis.")
+
+    detail = PHOTO_FIT_IMAGE_DETAIL if PHOTO_FIT_IMAGE_DETAIL in {"low", "high", "auto"} else "low"
+    system_prompt = (
+        "You are a rental listing visual analyst. Return ONLY valid JSON that matches the provided schema. "
+        "Use only the supplied images and metadata. Do not infer amenities or conditions that are not visible. "
+        "Clearly separate visual evidence from factual listing claims."
+    )
+    user_prompt = (
+        "Analyze the representative listing photos for visual fit. Focus on visible room quality, group comfort, "
+        "kitchen/dining usability, bedroom/sleeping plausibility, bathroom condition, outdoor value, views, workspace, "
+        "and visible concerns. Treat captions and area labels as hints, not proof. If image coverage is limited, "
+        "state that in coverage_note and lower confidence.\n\n"
+        f"LISTING_AND_PHOTO_METADATA:\n{json.dumps(input_data, ensure_ascii=False)}"
+    )
+    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
+    for index, photo in enumerate(selected_photos, 1):
+        label = {
+            "index": index,
+            "area": photo.get("area"),
+            "caption": photo.get("caption"),
+            "position": photo.get("position"),
+        }
+        user_content.append({"type": "input_text", "text": f"Photo {index} metadata: {json.dumps(label, ensure_ascii=False)}"})
+        image_part = {
+            "type": "input_image",
+            "image_url": photo.get("url"),
+            "detail": detail,
+        }
+        user_content.append(image_part)
+
+    output = _call_openai_structured(
+        model,
+        system_prompt,
+        user_prompt,
+        _photo_fit_json_schema(),
+        schema_name="listing_photo_fit",
+        user_content=user_content,
+    )
+    validated = ListingPhotoFit.model_validate(output)
+    return validated.model_dump()
+
+
 def generate_listing_comparison(
     listings: List[Dict[str, Any]],
     reviews_by_listing: Dict[str, List[Dict[str, Any]]],
     *,
     memory_context: Optional[Dict[str, Any]] = None,
+    photo_fit_by_listing: Optional[Dict[str, Dict[str, Any]]] = None,
     model: Optional[str] = None,
 ) -> Dict[str, Any]:
     model = model or DEFAULT_MODEL
-    input_data = build_comparison_input(listings, reviews_by_listing, memory_context=memory_context)
+    input_data = build_comparison_input(
+        listings,
+        reviews_by_listing,
+        memory_context=memory_context,
+        photo_fit_by_listing=photo_fit_by_listing,
+    )
     label_map = {
         str(item.get("listing", {}).get("id") or ""): item.get("listing", {}).get("label")
         for item in input_data.get("listings", [])
@@ -492,9 +790,18 @@ def generate_listing_comparison(
         "Keep the Summary, Winner, Key tradeoffs, Sections, and Listing notes grounded in listing/review data. "
         "If no memory context is present, return empty personalized_fit and memory_citations arrays and set memory_context_note to null. "
         "If memory context is enabled but sparse or not useful, set memory_context_note to a short explanation.\n\n"
+        "If any listing includes photo_fit, populate visual_fit with a separate photo-based assessment for those listings. "
+        "Use photo_fit only as visual evidence. Do not claim non-visible amenities as facts, and keep visual concerns separate "
+        "from review/listing concerns. If no photo_fit is present, return an empty visual_fit array.\n\n"
         f"LABELS: {json.dumps(label_map, ensure_ascii=False)}\n\nDATA:\n{json.dumps(input_data, ensure_ascii=False)}"
     )
-    output = _call_openai_structured(model, system_prompt, user_prompt, _comparison_json_schema())
+    output = _call_openai_structured(
+        model,
+        system_prompt,
+        user_prompt,
+        _comparison_json_schema(),
+        schema_name="listing_comparison",
+    )
     validated = ListingComparison.model_validate(output)
     return validated.model_dump()
 
@@ -508,13 +815,31 @@ def build_summary_request(
     return model, input_hash
 
 
+def build_photo_fit_request(
+    listing: Dict[str, Any],
+    model: Optional[str] = None,
+    *,
+    max_images: Optional[int] = None,
+) -> Tuple[str, str]:
+    model = model or DEFAULT_MODEL
+    input_data = build_photo_fit_input(listing, max_images=max_images)
+    input_hash = build_input_hash(input_data)
+    return model, input_hash
+
+
 def build_comparison_request(
     listings: List[Dict[str, Any]],
     reviews_by_listing: Dict[str, List[Dict[str, Any]]],
     memory_context: Optional[Dict[str, Any]] = None,
+    photo_fit_by_listing: Optional[Dict[str, Dict[str, Any]]] = None,
     model: Optional[str] = None,
 ) -> Tuple[str, str]:
     model = model or DEFAULT_MODEL
-    input_data = build_comparison_input(listings, reviews_by_listing, memory_context=memory_context)
+    input_data = build_comparison_input(
+        listings,
+        reviews_by_listing,
+        memory_context=memory_context,
+        photo_fit_by_listing=photo_fit_by_listing,
+    )
     input_hash = build_input_hash(input_data)
     return model, input_hash

@@ -12,6 +12,7 @@ const defaultSettings = {
   bulkDisableLiteRetry: false,
   compareDisclaimer: true,
   compareUseMemory: false,
+  compareUsePhotoFit: false,
   compareMemoryFocus: '',
   compareMemoryLimit: 6,
   requireMinCompareCoverage: false,

@@ -11,10 +11,13 @@ from services.geo_suggest import suggest_locations
 from services.comparison_memory import build_comparison_memory_query, compact_memory_context
 from services.llm_enrichment import (
     COMPARISON_PROMPT_VERSION,
+    PHOTO_FIT_PROMPT_VERSION,
     PROMPT_VERSION as LLM_PROMPT_VERSION,
     build_comparison_request,
+    build_photo_fit_request,
     build_summary_request,
     generate_listing_comparison,
+    generate_listing_photo_fit,
     generate_listing_summary,
 )
 
@@ -229,6 +232,18 @@ def _build_compare_memory_context(
     context["focus"] = focus
     context["limit"] = int(limit)
     return context
+
+
+def _photo_fit_context_for_listings(listings: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    photo_fit_by_listing: Dict[str, Dict[str, Any]] = {}
+    for listing in listings:
+        listing_id = str(listing.get("id") or listing.get("listing_id") or "").strip()
+        if not listing_id:
+            continue
+        fit = storage.get_latest_enrichment(listing_id, "listing_photo_fit")
+        if isinstance(fit, dict):
+            photo_fit_by_listing[listing_id] = fit
+    return photo_fit_by_listing
 
 
 def _summarize_job_metrics(items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1009,6 +1024,61 @@ def create_listing_summary(listing_id: str):
     return jsonify({"status": "queued", "job": job})
 
 
+@api_bp.get("/api/v1/enrich/listings/<listing_id>/photo-fit")
+def get_listing_photo_fit(listing_id: str):
+    photo_fit = storage.get_latest_enrichment(listing_id, "listing_photo_fit")
+    if not photo_fit:
+        return jsonify({"error": "photo fit not found"}), 404
+    return jsonify({"photo_fit": photo_fit})
+
+
+@api_bp.post("/api/v1/enrich/listings/<listing_id>/photo-fit")
+def create_listing_photo_fit(listing_id: str):
+    payload = _payload()
+    force = bool(payload.get("force"))
+    sync = bool(payload.get("sync"))
+    model_override = payload.get("model")
+    max_images = _coerce_int_range(payload.get("max_images"), 1, 16)
+    listing = storage.get_listing(listing_id)
+    if not listing:
+        return jsonify({"error": "listing not found"}), 404
+    model, input_hash = build_photo_fit_request(listing, model=model_override, max_images=max_images)
+    if not force:
+        existing = storage.get_enrichment_by_hash(
+            listing_id, "listing_photo_fit", model, PHOTO_FIT_PROMPT_VERSION, input_hash
+        )
+        if existing:
+            return jsonify({"status": "cached", "photo_fit": existing})
+    job_payload = {
+        "listing_id": listing_id,
+        "kind": "listing_photo_fit",
+        "model": model,
+        "input_hash": input_hash,
+        "max_images": max_images,
+    }
+    if sync:
+        job = storage.create_job("listing_enrich", job_payload)
+        storage.update_job(job["job_id"], status="running")
+        try:
+            output = generate_listing_photo_fit(listing, model=model, max_images=max_images)
+            enrichment_id = storage.add_enrichment(
+                listing_id,
+                "listing_photo_fit",
+                model,
+                PHOTO_FIT_PROMPT_VERSION,
+                input_hash,
+                output,
+            )
+            storage.update_job(job["job_id"], status="complete", result_ref=enrichment_id)
+            return jsonify({"status": "complete", "photo_fit": output, "job": job})
+        except Exception as exc:
+            storage.update_job(job["job_id"], status="failed", error=str(exc))
+            return jsonify({"error": str(exc)}), 500
+
+    job = storage.create_job("listing_enrich", job_payload)
+    return jsonify({"status": "queued", "job": job})
+
+
 @api_bp.post("/api/v1/enrich/compare")
 def create_listing_comparison():
     payload = _payload()
@@ -1025,6 +1095,7 @@ def create_listing_comparison():
         payload.get("min_review_coverage"),
         _coerce_ratio(os.getenv("RENTAL_COMPARE_MIN_COVERAGE_DEFAULT"), 0.5),
     )
+    use_photo_fit = _to_bool(payload.get("use_photo_fit"), False)
     if not isinstance(listing_ids, list) or len(listing_ids) < 2:
         return jsonify({"error": "listing_ids must include at least 2 items"}), 400
     listing_ids = [str(value).strip() for value in listing_ids if str(value).strip()]
@@ -1076,10 +1147,12 @@ def create_listing_comparison():
 
     memory_context = _build_compare_memory_context(listings, payload)
     use_personality_rag = bool(memory_context and memory_context.get("enabled"))
+    photo_fit_by_listing = _photo_fit_context_for_listings(listings) if use_photo_fit else None
     model, input_hash = build_comparison_request(
         listings,
         reviews_by_listing,
         memory_context=memory_context,
+        photo_fit_by_listing=photo_fit_by_listing,
         model=model_override,
     )
     compare_key = f"compare:{input_hash}"
@@ -1102,6 +1175,7 @@ def create_listing_comparison():
                 "require_min_coverage": bool(require_min_coverage),
                 "min_review_coverage": float(min_review_coverage),
                 "use_personality_rag": use_personality_rag,
+                "use_photo_fit": bool(use_photo_fit),
                 "user_id": payload.get("user_id"),
                 "memory_focus": payload.get("memory_focus"),
                 "memory_limit": payload.get("memory_limit"),
@@ -1114,6 +1188,7 @@ def create_listing_comparison():
                 listings,
                 reviews_by_listing,
                 memory_context=memory_context,
+                photo_fit_by_listing=photo_fit_by_listing,
                 model=model,
             )
             enrichment_id = storage.add_enrichment(
@@ -1141,6 +1216,7 @@ def create_listing_comparison():
             "require_min_coverage": bool(require_min_coverage),
             "min_review_coverage": float(min_review_coverage),
             "use_personality_rag": use_personality_rag,
+            "use_photo_fit": bool(use_photo_fit),
             "user_id": payload.get("user_id"),
             "memory_focus": payload.get("memory_focus"),
             "memory_limit": payload.get("memory_limit"),

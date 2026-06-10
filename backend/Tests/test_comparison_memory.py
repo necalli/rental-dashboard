@@ -8,7 +8,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from services.comparison_memory import build_comparison_memory_query, compact_memory_context
-from services.llm_enrichment import build_comparison_input, build_comparison_request
+from services.llm_enrichment import build_comparison_input, build_comparison_request, build_photo_fit_input
 
 
 class ComparisonMemoryTests(unittest.TestCase):
@@ -17,6 +17,57 @@ class ComparisonMemoryTests(unittest.TestCase):
         payload = build_comparison_input(listings, {"a": []}, memory_context=None)
         self.assertIn("listings", payload)
         self.assertNotIn("trip_memory_context", payload)
+
+    def test_photo_fit_input_uses_representative_photos(self) -> None:
+        listing = {
+            "id": "a",
+            "title": "Cabin A",
+            "photos": [
+                {"url": "https://example.test/bedroom-2.jpg", "room_or_area": "bedroom"},
+                {"url": "https://example.test/unlabeled.jpg"},
+            ],
+            "representative_photos": {
+                "kitchen": {"url": "https://example.test/kitchen.jpg", "caption": "Open kitchen"},
+                "bedroom": {"url": "https://example.test/bedroom.jpg", "caption": "Queen bedroom"},
+            },
+        }
+
+        payload = build_photo_fit_input(listing, max_images=1)
+
+        self.assertEqual(payload["photo_count"], 2)
+        self.assertEqual(payload["area_counts"], {"bedroom": 1, "Unlabeled": 1})
+        self.assertEqual(
+            payload["selected_photos"],
+            [
+                {
+                    "area": "kitchen",
+                    "url": "https://example.test/kitchen.jpg",
+                    "caption": "Open kitchen",
+                    "position": None,
+                }
+            ],
+        )
+
+    def test_comparison_input_can_include_cached_photo_fit(self) -> None:
+        listings = [{"id": "a", "title": "Cabin A"}]
+        payload = build_comparison_input(
+            listings,
+            {"a": []},
+            photo_fit_by_listing={
+                "a": {
+                    "visual_summary": "Bright shared spaces.",
+                    "visual_strengths": ["Large dining area"],
+                    "visual_concerns": [],
+                    "photo_confidence": "medium",
+                    "analyzed_photo_count": 4,
+                }
+            },
+        )
+
+        self.assertEqual(
+            payload["listings"][0]["photo_fit"]["visual_summary"],
+            "Bright shared spaces.",
+        )
 
     def test_enabled_memory_context_changes_comparison_hash(self) -> None:
         listings = [{"id": "a", "title": "Cabin A"}, {"id": "b", "title": "Cabin B"}]
