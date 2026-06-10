@@ -422,6 +422,85 @@ const getPrimaryPhoto = (listing) => {
     null
   )
 }
+const getPhotoUrl = (photo) => {
+  if (!photo) return null
+  if (typeof photo === 'string') return photo
+  return (
+    photo.url ||
+    photo.originalPicture ||
+    photo.picture ||
+    photo.large ||
+    photo.xlPicture ||
+    photo.thumbnailUrl ||
+    null
+  )
+}
+const cleanPhotoText = (value) => {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'object') {
+    if (Array.isArray(value)) {
+      return value.map(cleanPhotoText).filter(Boolean).join(' ') || null
+    }
+    return (
+      cleanPhotoText(value.text) ||
+      cleanPhotoText(value.title) ||
+      cleanPhotoText(value.caption) ||
+      cleanPhotoText(value.localizedText) ||
+      cleanPhotoText(value.value)
+    )
+  }
+  const text = String(value).trim()
+  return text || null
+}
+const getPhotoArea = (photo) => {
+  if (!photo || typeof photo === 'string') return 'Unlabeled'
+  return cleanPhotoText(photo.room_or_area || photo.roomType || photo.roomTitle) || 'Unlabeled'
+}
+const getPhotoCaption = (photo) => {
+  if (!photo || typeof photo === 'string') return null
+  return cleanPhotoText(photo.localized_caption || photo.localizedCaption || photo.caption || photo.title)
+}
+const getPhotoAreaSummary = (listing) => {
+  const photos = Array.isArray(listing?.photos) ? listing.photos : []
+  const counts = new Map()
+  photos.forEach((photo) => {
+    if (!getPhotoUrl(photo)) return
+    const area = getPhotoArea(photo)
+    counts.set(area, (counts.get(area) || 0) + 1)
+  })
+  return Array.from(counts.entries())
+    .map(([area, count]) => ({ area, count }))
+    .sort((a, b) => {
+      if (a.area === 'Unlabeled') return 1
+      if (b.area === 'Unlabeled') return -1
+      return b.count - a.count || a.area.localeCompare(b.area)
+    })
+}
+const getRepresentativePhotos = (listing) => {
+  const explicit =
+    listing?.representative_photos && typeof listing.representative_photos === 'object'
+      ? listing.representative_photos
+      : {}
+  const representatives = []
+  const seenAreas = new Set()
+  Object.entries(explicit).forEach(([area, photo]) => {
+    const url = getPhotoUrl(photo)
+    if (!area || !url || seenAreas.has(area)) return
+    seenAreas.add(area)
+    representatives.push({ area, url, caption: getPhotoCaption(photo) })
+  })
+
+  const photos = Array.isArray(listing?.photos) ? listing.photos : []
+  photos.forEach((photo) => {
+    const area = getPhotoArea(photo)
+    const url = getPhotoUrl(photo)
+    if (!area || !url || seenAreas.has(area)) return
+    seenAreas.add(area)
+    representatives.push({ area, url, caption: getPhotoCaption(photo) })
+  })
+
+  return representatives.filter((item) => item.area !== 'Unlabeled').slice(0, 8)
+}
 const getPreferenceAlignment = (listing) =>
   listing?.preference_alignment && typeof listing.preference_alignment === 'object'
     ? listing.preference_alignment
@@ -543,6 +622,9 @@ export {
   getAmenityLabel,
   getAmenitiesList,
   getPrimaryPhoto,
+  getPhotoUrl,
+  getPhotoAreaSummary,
+  getRepresentativePhotos,
   getPreferenceAlignment,
   getPreferenceScore,
   hasPreferenceAlignment,

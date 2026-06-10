@@ -79,6 +79,8 @@ import {
   getMetricValue,
   getAmenitiesList,
   getPrimaryPhoto,
+  getPhotoAreaSummary,
+  getRepresentativePhotos,
   getPreferenceAlignment,
   getPreferenceScore,
   hasPreferenceAlignment,
@@ -771,6 +773,8 @@ export default function App() {
   ])
 
   const amenitiesList = useMemo(() => getAmenitiesList(detailsListing), [detailsListing])
+  const photoAreaSummary = useMemo(() => getPhotoAreaSummary(detailsListing), [detailsListing])
+  const representativePhotos = useMemo(() => getRepresentativePhotos(detailsListing), [detailsListing])
   const detailsStageLabel = useMemo(() => getCaptureStageLabel(detailsListing), [detailsListing])
   const detailsStageGuidance = useMemo(() => getCaptureStageGuidance(detailsListing), [detailsListing])
   const detailsCoverageLabel = useMemo(
@@ -2453,6 +2457,53 @@ export default function App() {
                     )}
                   </div>
                 </div>
+
+                {(photoAreaSummary.length > 0 || representativePhotos.length > 0) && (
+                  <div className="rounded-xl border border-border/60 bg-background/60 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs uppercase text-muted-foreground">Photo areas</p>
+                      {Array.isArray(detailsListing.photos) && detailsListing.photos.length > 0 && (
+                        <Badge variant="outline">{detailsListing.photos.length} photos</Badge>
+                      )}
+                    </div>
+                    {photoAreaSummary.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {photoAreaSummary.slice(0, 10).map((item) => (
+                          <Badge key={item.area} variant="outline">
+                            {item.area}: {item.count}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    {representativePhotos.length > 0 && (
+                      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {representativePhotos.map((photo) => (
+                          <div
+                            key={`${photo.area}-${photo.url}`}
+                            className="overflow-hidden rounded-lg border border-border/60 bg-muted/30"
+                          >
+                            <div className="aspect-[4/3] overflow-hidden bg-muted">
+                              <img
+                                src={photo.url}
+                                alt={photo.caption || `${photo.area} representative photo`}
+                                className="h-full w-full object-cover"
+                                loading="lazy"
+                              />
+                            </div>
+                            <div className="p-2">
+                              <p className="truncate text-xs font-semibold capitalize">{photo.area}</p>
+                              {photo.caption && (
+                                <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
+                                  {photo.caption}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="rounded-xl border border-border/60 bg-background/60 p-3">
                   <p className="text-xs uppercase text-muted-foreground">Description</p>
