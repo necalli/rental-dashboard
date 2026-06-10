@@ -54,6 +54,43 @@ class ListingSchemaStageTests(unittest.TestCase):
         validation = validate_listing(listing)
         self.assertIn("missing captured reviews", validation.get("warnings") or [])
 
+    def test_normalize_photos_preserves_metadata_and_legacy_urls(self) -> None:
+        listing = normalize_listing(
+            {
+                "id": "123",
+                "source": "airbnb",
+                "url": "https://www.airbnb.com/rooms/123",
+                "photos": [
+                    "https://example.test/legacy.jpg",
+                    {
+                        "baseUrl": "https://example.test/kitchen.jpg",
+                        "caption": {"text": "Kitchen with island"},
+                        "localizedCaption": "Kitchen",
+                        "imageType": "PHOTO",
+                        "roomType": "kitchen",
+                        "position": "2",
+                    },
+                    {"url": "https://example.test/kitchen.jpg", "caption": "duplicate"},
+                ],
+            }
+        )
+
+        self.assertEqual(
+            listing.get("photos"),
+            [
+                {"url": "https://example.test/legacy.jpg"},
+                {
+                    "url": "https://example.test/kitchen.jpg",
+                    "caption": "Kitchen with island",
+                    "localized_caption": "Kitchen",
+                    "title": None,
+                    "image_type": "PHOTO",
+                    "room_or_area": "kitchen",
+                    "position": 2,
+                },
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

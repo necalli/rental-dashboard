@@ -23,7 +23,8 @@
 - cancellation_policy
 - safety_notes[]
 - amenities[]: { group, items[] }
-- photos[]
+- photos[]: { url, caption, localized_caption, title, image_type, room_or_area, position }
+- representative_photos: { [room_or_area]: photo }
 - host: { id, name, superhost, response_rate, response_time, rating, review_count }
 - pricing: { currency, nightly, total, fees[] }
 - availability: { check_in, check_out, is_available }

@@ -184,6 +184,7 @@ def parse_listing_from_html(
         "host": host,
         "reviews_summary": reviews_summary,
         "photos": photos,
+        "representative_photos": _select_representative_photos(photos),
         "pricing": pricing,
         "availability": availability,
         "captured_at": _now_iso(),
@@ -449,15 +450,126 @@ def _extract_sleeping_arrangements(section: Dict[str, Any]) -> List[Dict[str, An
     return arrangements
 
 
-def _extract_photos(section: Dict[str, Any]) -> List[str]:
-    photos: List[str] = []
-    for item in section.get("mediaItems") or []:
-        for key in ("baseUrl", "url", "previewEncodedPng", "thumbnailUrl"):
-            url = item.get(key)
-            if url:
-                photos.append(url)
-                break
+PHOTO_URL_KEYS = (
+    "baseUrl",
+    "url",
+    "originalPicture",
+    "picture",
+    "large",
+    "xlPicture",
+    "thumbnailUrl",
+    "previewEncodedPng",
+)
+
+PHOTO_TEXT_KEYS = (
+    "caption",
+    "localizedCaption",
+    "title",
+    "accessibilityLabel",
+    "imageType",
+    "roomType",
+    "roomTitle",
+)
+
+PHOTO_AREA_KEYWORDS = (
+    ("bedroom", ("bedroom", "bed room", "queen bed", "king bed", "bunk", "sleeping")),
+    ("kitchen", ("kitchen", "stove", "oven", "cooktop", "fridge", "refrigerator")),
+    ("living room", ("living room", "lounge", "sofa", "couch", "fireplace")),
+    ("bathroom", ("bathroom", "bath", "shower", "toilet", "tub")),
+    ("outdoor", ("backyard", "yard", "deck", "patio", "porch", "terrace", "garden", "fire pit")),
+    ("view", ("view", "mountain", "lake", "river", "creek", "sunset")),
+    ("workspace", ("workspace", "desk", "office")),
+    ("dining", ("dining", "table", "breakfast")),
+    ("amenity", ("hot tub", "pool", "sauna", "grill", "bbq", "washer", "dryer")),
+)
+
+
+def _extract_photos(section: Dict[str, Any]) -> List[Dict[str, Any]]:
+    photos: List[Dict[str, Any]] = []
+    seen = set()
+    for index, item in enumerate(section.get("mediaItems") or []):
+        if not isinstance(item, dict):
+            continue
+        photo = _normalize_photo_item(item, index)
+        url = photo.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        photos.append(photo)
     return photos
+
+
+def _normalize_photo_item(item: Dict[str, Any], index: int) -> Dict[str, Any]:
+    url = _first_photo_url(item)
+    caption = _photo_text(item.get("caption"))
+    localized_caption = _photo_text(item.get("localizedCaption"))
+    title = _photo_text(item.get("title"))
+    image_type = _photo_text(item.get("imageType"))
+    room_or_area = _first_non_empty(
+        _photo_text(item.get("roomType")),
+        _photo_text(item.get("roomTitle")),
+        _infer_photo_area(item),
+    )
+    return {
+        "url": url,
+        "caption": caption,
+        "localized_caption": localized_caption,
+        "title": title,
+        "image_type": image_type,
+        "room_or_area": room_or_area,
+        "position": index,
+    }
+
+
+def _first_photo_url(item: Dict[str, Any]) -> Optional[str]:
+    for key in PHOTO_URL_KEYS:
+        text = _photo_text(item.get(key))
+        if text:
+            return text
+    return None
+
+
+def _photo_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        for key in ("text", "title", "caption", "localizedText", "value"):
+            text = _photo_text(value.get(key))
+            if text:
+                return text
+        return None
+    if isinstance(value, list):
+        parts = [_photo_text(item) for item in value]
+        text = " ".join(part for part in parts if part)
+        return text or None
+    text = str(value).strip()
+    return text or None
+
+
+def _infer_photo_area(item: Dict[str, Any]) -> Optional[str]:
+    haystack = " ".join(
+        text
+        for key in PHOTO_TEXT_KEYS
+        for text in [_photo_text(item.get(key))]
+        if text
+    ).lower()
+    if not haystack:
+        return None
+    for area, keywords in PHOTO_AREA_KEYWORDS:
+        if any(keyword in haystack for keyword in keywords):
+            return area
+    return None
+
+
+def _select_representative_photos(photos: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    representatives: Dict[str, Dict[str, Any]] = {}
+    for photo in photos:
+        if not isinstance(photo, dict):
+            continue
+        area = photo.get("room_or_area")
+        if area and area not in representatives:
+            representatives[area] = photo
+    return representatives
 
 
 def _extract_pricing(

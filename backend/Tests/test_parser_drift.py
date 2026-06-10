@@ -142,6 +142,80 @@ class ListingParserDriftTests(unittest.TestCase):
         )
         self.assertEqual((parser_meta.get("signals") or {}).get("parsed_amenity_group_count"), 2)
 
+    def test_listing_parser_preserves_photo_metadata(self) -> None:
+        stay_payload = {
+            "sections": {
+                "metadata": {
+                    "sharingConfig": {
+                        "title": "Cabin in Phoenicia",
+                        "propertyType": "Cabin",
+                        "location": "Phoenicia",
+                    }
+                },
+                "sections": [
+                    {
+                        "sectionId": "PHOTO_TOUR_SCROLLABLE_MODAL",
+                        "section": {
+                            "mediaItems": [
+                                {
+                                    "baseUrl": "https://example.test/kitchen.jpg",
+                                    "caption": "Bright kitchen with island seating",
+                                    "localizedCaption": {"text": "Kitchen and dining area"},
+                                    "imageType": "PHOTO",
+                                },
+                                {
+                                    "url": "https://example.test/deck.jpg",
+                                    "caption": "Private deck with mountain view",
+                                },
+                            ]
+                        },
+                    },
+                    {
+                        "sectionId": "TITLE_DEFAULT",
+                        "section": {"title": "Cabin in Phoenicia"},
+                    },
+                ],
+            }
+        }
+        capture = {
+            "url": "https://www.airbnb.com/rooms/123",
+            "html": _listing_html(stay_payload),
+            "responses": [],
+        }
+
+        listing, _ = parse_capture(capture, "123", capture["url"])
+
+        self.assertEqual(
+            listing.get("photos"),
+            [
+                {
+                    "url": "https://example.test/kitchen.jpg",
+                    "caption": "Bright kitchen with island seating",
+                    "localized_caption": "Kitchen and dining area",
+                    "title": None,
+                    "image_type": "PHOTO",
+                    "room_or_area": "kitchen",
+                    "position": 0,
+                },
+                {
+                    "url": "https://example.test/deck.jpg",
+                    "caption": "Private deck with mountain view",
+                    "localized_caption": None,
+                    "title": None,
+                    "image_type": None,
+                    "room_or_area": "outdoor",
+                    "position": 1,
+                },
+            ],
+        )
+        self.assertEqual(
+            listing.get("representative_photos"),
+            {
+                "kitchen": listing["photos"][0],
+                "outdoor": listing["photos"][1],
+            },
+        )
+
 
 class SearchParserDriftTests(unittest.TestCase):
     def test_search_parser_meta_and_backward_compatibility(self) -> None:

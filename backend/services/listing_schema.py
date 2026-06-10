@@ -238,15 +238,71 @@ def _normalize_sleeping(value: Any) -> List[Dict[str, Any]]:
     return output
 
 
-def _normalize_photos(value: Any) -> List[str]:
+def _normalize_photos(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    photos: List[str] = []
+    photos: List[Dict[str, Any]] = []
+    seen = set()
     for item in value:
-        text = _clean_text(item)
-        if text:
-            photos.append(text)
+        photo = _normalize_photo(item)
+        url = photo.get("url")
+        if url and url not in seen:
+            seen.add(url)
+            photos.append(photo)
     return photos
+
+
+def _normalize_photo(item: Any) -> Dict[str, Any]:
+    if isinstance(item, str):
+        return {"url": _clean_text(item)}
+    if not isinstance(item, dict):
+        return {"url": None}
+
+    url = _first_clean_text(
+        item.get("url"),
+        item.get("baseUrl"),
+        item.get("originalPicture"),
+        item.get("picture"),
+        item.get("large"),
+        item.get("xlPicture"),
+        item.get("thumbnailUrl"),
+        item.get("previewEncodedPng"),
+    )
+    return {
+        "url": url,
+        "caption": _clean_photo_text(item.get("caption")),
+        "localized_caption": _clean_photo_text(item.get("localized_caption") or item.get("localizedCaption")),
+        "title": _clean_photo_text(item.get("title")),
+        "image_type": _clean_photo_text(item.get("image_type") or item.get("imageType")),
+        "room_or_area": _clean_photo_text(
+            item.get("room_or_area") or item.get("roomType") or item.get("roomTitle")
+        ),
+        "position": _to_int(item.get("position")),
+    }
+
+
+def _first_clean_text(*values: Any) -> Optional[str]:
+    for value in values:
+        text = _clean_photo_text(value)
+        if text:
+            return text
+    return None
+
+
+def _clean_photo_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        for key in ("text", "title", "caption", "localizedText", "value"):
+            text = _clean_photo_text(value.get(key))
+            if text:
+                return text
+        return None
+    if isinstance(value, list):
+        parts = [_clean_photo_text(item) for item in value]
+        text = " ".join(part for part in parts if part)
+        return text or None
+    return _clean_text(value)
 
 
 def _normalize_string_list(value: Any) -> List[str]:
