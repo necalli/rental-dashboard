@@ -49,6 +49,7 @@ import {
   enableAgentChat,
   SETTINGS_KEY,
   COMPARE_DRAWER_KEY,
+  DETAILS_DRAWER_KEY,
   suggestDebounceMs,
   defaultSettings,
   clampInteger,
@@ -133,6 +134,16 @@ export default function App() {
   const [photoFitStatus, setPhotoFitStatus] = useState('idle')
   const [photoFitError, setPhotoFitError] = useState(null)
   const [reviewExpanding, setReviewExpanding] = useState(() => new Set())
+  const [detailsDrawerWidth, setDetailsDrawerWidth] = useState(() => {
+    if (typeof window === 'undefined') return 560
+    const stored = window.localStorage.getItem(DETAILS_DRAWER_KEY)
+    const parsed = stored ? parseInt(stored, 10) : 560
+    const clamped = Number.isNaN(parsed) ? 560 : Math.min(Math.max(parsed, 420), 980)
+    return clamped
+  })
+  const detailsResizeRef = useRef({ startX: 0, startWidth: 560 })
+  const detailsResizingRef = useRef(false)
+  const [detailsResizing, setDetailsResizing] = useState(false)
   const [compareOpen, setCompareOpen] = useState(false)
   const [compareDrawerWidth, setCompareDrawerWidth] = useState(() => {
     if (typeof window === 'undefined') return 680
@@ -643,6 +654,12 @@ export default function App() {
     const clamped = Math.min(Math.max(compareDrawerWidth, 420), 980)
     window.localStorage.setItem(COMPARE_DRAWER_KEY, clamped.toString())
   }, [compareDrawerWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const clamped = Math.min(Math.max(detailsDrawerWidth, 420), 980)
+    window.localStorage.setItem(DETAILS_DRAWER_KEY, clamped.toString())
+  }, [detailsDrawerWidth])
 
   useEffect(() => {
     setCompareSummary(null)
@@ -1553,6 +1570,32 @@ export default function App() {
     setCompareResizing(false)
     window.removeEventListener('pointermove', handleCompareResizeMove)
     window.removeEventListener('pointerup', handleCompareResizeEnd)
+  }
+
+  const handleDetailsResizeStart = (event) => {
+    event.preventDefault()
+    detailsResizingRef.current = true
+    setDetailsResizing(true)
+    detailsResizeRef.current = {
+      startX: event.clientX,
+      startWidth: detailsDrawerWidth,
+    }
+    window.addEventListener('pointermove', handleDetailsResizeMove)
+    window.addEventListener('pointerup', handleDetailsResizeEnd)
+  }
+
+  const handleDetailsResizeMove = (event) => {
+    if (!detailsResizingRef.current) return
+    const delta = detailsResizeRef.current.startX - event.clientX
+    const nextWidth = Math.min(Math.max(detailsResizeRef.current.startWidth + delta, 420), 980)
+    setDetailsDrawerWidth(nextWidth)
+  }
+
+  const handleDetailsResizeEnd = () => {
+    detailsResizingRef.current = false
+    setDetailsResizing(false)
+    window.removeEventListener('pointermove', handleDetailsResizeMove)
+    window.removeEventListener('pointerup', handleDetailsResizeEnd)
   }
 
   return (
@@ -2510,7 +2553,21 @@ export default function App() {
           </SheetContent>
         </Sheet>
         <Sheet open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <SheetContent className="w-full sm:max-w-xl">
+        <SheetContent
+          className="w-full sm:max-w-none"
+          style={{ width: detailsDrawerWidth, maxWidth: '100vw' }}
+        >
+          <div
+            className="absolute inset-y-0 left-0 hidden w-2 cursor-ew-resize select-none sm:block"
+            onPointerDown={handleDetailsResizeStart}
+            style={{ touchAction: 'none' }}
+          >
+            <div
+              className={`h-full w-1 rounded-full bg-transparent transition ${
+                detailsResizing ? 'bg-primary/40' : 'hover:bg-primary/30'
+              }`}
+            />
+          </div>
           <SheetHeader>
             <SheetTitle>{detailsListing?.title || 'Listing details'}</SheetTitle>
             <SheetDescription>
@@ -2630,7 +2687,7 @@ export default function App() {
                       </div>
                     )}
                     {representativePhotos.length > 0 && (
-                      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(110px,1fr))] gap-2">
                         {representativePhotos.map((photo) => (
                           <div
                             key={`${photo.area}-${photo.url}`}

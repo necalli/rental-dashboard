@@ -3,6 +3,7 @@ const MEMORY_USER_ID = import.meta.env.VITE_RAG_USER_ID || 'rental-dashboard'
 const enableAgentChat = String(import.meta.env.VITE_ENABLE_AGENT_CHAT || 'false').toLowerCase() === 'true'
 const SETTINGS_KEY = 'rental-settings'
 const COMPARE_DRAWER_KEY = 'rental-compare-drawer-width'
+const DETAILS_DRAWER_KEY = 'rental-details-drawer-width'
 const suggestDebounceMs = 400
 const defaultSettings = {
   reviewMode: 'lite',
@@ -586,6 +587,7 @@ export {
   enableAgentChat,
   SETTINGS_KEY,
   COMPARE_DRAWER_KEY,
+  DETAILS_DRAWER_KEY,
   suggestDebounceMs,
   defaultSettings,
   clampInteger,
