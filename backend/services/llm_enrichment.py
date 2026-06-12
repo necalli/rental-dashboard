@@ -16,6 +16,12 @@ DEFAULT_TIMEOUT = int(os.getenv("RENTAL_LLM_TIMEOUT", "60"))
 DEFAULT_REASONING_EFFORT = os.getenv("RENTAL_LLM_REASONING_EFFORT", "").strip().lower()
 DEFAULT_MAX_OUTPUT_TOKENS = os.getenv("RENTAL_LLM_MAX_OUTPUT_TOKENS", "").strip()
 PHOTO_FIT_MAX_IMAGES = int(os.getenv("RENTAL_PHOTO_FIT_MAX_IMAGES", "10") or 10)
+PHOTO_FIT_INCLUDE_UNLABELED = os.getenv("RENTAL_PHOTO_FIT_INCLUDE_UNLABELED", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+PHOTO_FIT_MAX_UNLABELED = int(os.getenv("RENTAL_PHOTO_FIT_MAX_UNLABELED", "4") or 4)
 PHOTO_FIT_IMAGE_DETAIL = os.getenv("RENTAL_PHOTO_FIT_IMAGE_DETAIL", "low").strip().lower() or "low"
 API_KEY = os.getenv("RENTAL_LLM_API_KEY", "")
 BASE_URL = os.getenv("RENTAL_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
@@ -199,8 +205,16 @@ def _photo_area_counts(listing: Dict[str, Any]) -> Dict[str, int]:
     return counts
 
 
-def _select_photo_fit_photos(listing: Dict[str, Any], max_images: Optional[int] = None) -> List[Dict[str, Any]]:
+def _select_photo_fit_photos(
+    listing: Dict[str, Any],
+    max_images: Optional[int] = None,
+    *,
+    include_unlabeled: Optional[bool] = None,
+    max_unlabeled: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     max_images = max(1, int(max_images or PHOTO_FIT_MAX_IMAGES or 10))
+    include_unlabeled = PHOTO_FIT_INCLUDE_UNLABELED if include_unlabeled is None else bool(include_unlabeled)
+    max_unlabeled = max(0, int(max_unlabeled if max_unlabeled is not None else PHOTO_FIT_MAX_UNLABELED))
     selected: List[Dict[str, Any]] = []
     seen_urls = set()
     representatives = listing.get("representative_photos")
@@ -220,6 +234,7 @@ def _select_photo_fit_photos(listing: Dict[str, Any], max_images: Optional[int] 
                 "url": url,
                 "caption": _photo_caption(photo),
                 "position": photo.get("position") if isinstance(photo, dict) else None,
+                "source": "representative",
             }
         )
         if len(selected) >= max_images:
@@ -240,10 +255,47 @@ def _select_photo_fit_photos(listing: Dict[str, Any], max_images: Optional[int] 
                 "url": url,
                 "caption": _photo_caption(photo),
                 "position": photo.get("position") if isinstance(photo, dict) else None,
+                "source": "metadata_labeled",
             }
         )
         if len(selected) >= max_images:
             return selected
+    if include_unlabeled and max_unlabeled > 0 and len(selected) < max_images:
+        unlabeled = [
+            photo
+            for photo in photos
+            if _photo_url(photo) and _photo_url(photo) not in seen_urls and _photo_area(photo) == "Unlabeled"
+        ]
+        remaining = min(max_images - len(selected), max_unlabeled, len(unlabeled))
+        if remaining > 0:
+            if remaining == 1:
+                indexes = [0]
+            else:
+                span = max(1, len(unlabeled) - 1)
+                indexes = sorted({round(i * span / (remaining - 1)) for i in range(remaining)})
+                cursor = 0
+                while len(indexes) < remaining and cursor < len(unlabeled):
+                    if cursor not in indexes:
+                        indexes.append(cursor)
+                    cursor += 1
+                indexes = sorted(indexes[:remaining])
+            for index in indexes:
+                photo = unlabeled[index]
+                url = _photo_url(photo)
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                selected.append(
+                    {
+                        "area": "Unlabeled",
+                        "url": url,
+                        "caption": _photo_caption(photo),
+                        "position": photo.get("position") if isinstance(photo, dict) else None,
+                        "source": "unlabeled_fallback",
+                    }
+                )
+                if len(selected) >= max_images:
+                    return selected
     return selected
 
 
@@ -317,19 +369,40 @@ def build_photo_fit_input(
     listing: Dict[str, Any],
     *,
     max_images: Optional[int] = None,
+    include_unlabeled: Optional[bool] = None,
+    max_unlabeled: Optional[int] = None,
+    image_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     summary_input = build_listing_summary_input(listing, [])
     photos = listing.get("photos") if isinstance(listing.get("photos"), list) else []
-    selected = _select_photo_fit_photos(listing, max_images=max_images)
+    selected = _select_photo_fit_photos(
+        listing,
+        max_images=max_images,
+        include_unlabeled=include_unlabeled,
+        max_unlabeled=max_unlabeled,
+    )
+    resolved_max_images = max(1, int(max_images or PHOTO_FIT_MAX_IMAGES or 10))
+    resolved_include_unlabeled = (
+        PHOTO_FIT_INCLUDE_UNLABELED if include_unlabeled is None else bool(include_unlabeled)
+    )
+    resolved_max_unlabeled = max(
+        0,
+        int(max_unlabeled if max_unlabeled is not None else PHOTO_FIT_MAX_UNLABELED),
+    )
+    resolved_detail = (image_detail or PHOTO_FIT_IMAGE_DETAIL or "low").strip().lower()
+    if resolved_detail not in {"low", "high", "auto"}:
+        resolved_detail = "low"
     return {
         "listing": summary_input.get("listing") or {},
         "photo_count": len(photos),
         "area_counts": _photo_area_counts(listing),
         "selected_photos": selected,
         "selection_policy": {
-            "source": "representative_photos_first",
-            "max_images": max(1, int(max_images or PHOTO_FIT_MAX_IMAGES or 10)),
-            "image_detail": PHOTO_FIT_IMAGE_DETAIL if PHOTO_FIT_IMAGE_DETAIL in {"low", "high", "auto"} else "low",
+            "source": "representative_then_labeled_then_unlabeled_fallback",
+            "max_images": resolved_max_images,
+            "include_unlabeled": resolved_include_unlabeled,
+            "max_unlabeled": resolved_max_unlabeled,
+            "image_detail": resolved_detail,
         },
     }
 
@@ -702,14 +775,25 @@ def generate_listing_photo_fit(
     *,
     model: Optional[str] = None,
     max_images: Optional[int] = None,
+    include_unlabeled: Optional[bool] = None,
+    max_unlabeled: Optional[int] = None,
+    image_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     model = model or DEFAULT_MODEL
-    input_data = build_photo_fit_input(listing, max_images=max_images)
+    input_data = build_photo_fit_input(
+        listing,
+        max_images=max_images,
+        include_unlabeled=include_unlabeled,
+        max_unlabeled=max_unlabeled,
+        image_detail=image_detail,
+    )
     selected_photos = input_data.get("selected_photos") or []
     if not selected_photos:
         raise ValueError("No representative listing photos are available for analysis.")
 
-    detail = PHOTO_FIT_IMAGE_DETAIL if PHOTO_FIT_IMAGE_DETAIL in {"low", "high", "auto"} else "low"
+    detail = (image_detail or PHOTO_FIT_IMAGE_DETAIL or "low").strip().lower()
+    if detail not in {"low", "high", "auto"}:
+        detail = "low"
     system_prompt = (
         "You are a rental listing visual analyst. Return ONLY valid JSON that matches the provided schema. "
         "Use only the supplied images and metadata. Do not infer amenities or conditions that are not visible. "
@@ -719,7 +803,8 @@ def generate_listing_photo_fit(
         "Analyze the representative listing photos for visual fit. Focus on visible room quality, group comfort, "
         "kitchen/dining usability, bedroom/sleeping plausibility, bathroom condition, outdoor value, views, workspace, "
         "and visible concerns. Treat captions and area labels as hints, not proof. If image coverage is limited, "
-        "state that in coverage_note and lower confidence.\n\n"
+        "state that in coverage_note and lower confidence. Some selected photos may be marked source=unlabeled_fallback; "
+        "for those, infer the likely area only when it is visually clear, otherwise describe the area as unknown.\n\n"
         f"LISTING_AND_PHOTO_METADATA:\n{json.dumps(input_data, ensure_ascii=False)}"
     )
     user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
@@ -729,6 +814,7 @@ def generate_listing_photo_fit(
             "area": photo.get("area"),
             "caption": photo.get("caption"),
             "position": photo.get("position"),
+            "source": photo.get("source"),
         }
         user_content.append({"type": "input_text", "text": f"Photo {index} metadata: {json.dumps(label, ensure_ascii=False)}"})
         image_part = {
@@ -820,9 +906,18 @@ def build_photo_fit_request(
     model: Optional[str] = None,
     *,
     max_images: Optional[int] = None,
+    include_unlabeled: Optional[bool] = None,
+    max_unlabeled: Optional[int] = None,
+    image_detail: Optional[str] = None,
 ) -> Tuple[str, str]:
     model = model or DEFAULT_MODEL
-    input_data = build_photo_fit_input(listing, max_images=max_images)
+    input_data = build_photo_fit_input(
+        listing,
+        max_images=max_images,
+        include_unlabeled=include_unlabeled,
+        max_unlabeled=max_unlabeled,
+        image_detail=image_detail,
+    )
     input_hash = build_input_hash(input_data)
     return model, input_hash
 

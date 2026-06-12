@@ -1039,10 +1039,22 @@ def create_listing_photo_fit(listing_id: str):
     sync = bool(payload.get("sync"))
     model_override = payload.get("model")
     max_images = _coerce_int_range(payload.get("max_images"), 1, 16)
+    include_unlabeled = _to_bool(payload.get("include_unlabeled"), True)
+    max_unlabeled = _coerce_int_range(payload.get("max_unlabeled"), 0, 10)
+    image_detail = str(payload.get("image_detail") or "").strip().lower() or None
+    if image_detail not in {None, "low", "auto", "high"}:
+        image_detail = None
     listing = storage.get_listing(listing_id)
     if not listing:
         return jsonify({"error": "listing not found"}), 404
-    model, input_hash = build_photo_fit_request(listing, model=model_override, max_images=max_images)
+    model, input_hash = build_photo_fit_request(
+        listing,
+        model=model_override,
+        max_images=max_images,
+        include_unlabeled=include_unlabeled,
+        max_unlabeled=max_unlabeled,
+        image_detail=image_detail,
+    )
     if not force:
         existing = storage.get_enrichment_by_hash(
             listing_id, "listing_photo_fit", model, PHOTO_FIT_PROMPT_VERSION, input_hash
@@ -1055,12 +1067,22 @@ def create_listing_photo_fit(listing_id: str):
         "model": model,
         "input_hash": input_hash,
         "max_images": max_images,
+        "include_unlabeled": include_unlabeled,
+        "max_unlabeled": max_unlabeled,
+        "image_detail": image_detail,
     }
     if sync:
         job = storage.create_job("listing_enrich", job_payload)
         storage.update_job(job["job_id"], status="running")
         try:
-            output = generate_listing_photo_fit(listing, model=model, max_images=max_images)
+            output = generate_listing_photo_fit(
+                listing,
+                model=model,
+                max_images=max_images,
+                include_unlabeled=include_unlabeled,
+                max_unlabeled=max_unlabeled,
+                image_detail=image_detail,
+            )
             enrichment_id = storage.add_enrichment(
                 listing_id,
                 "listing_photo_fit",

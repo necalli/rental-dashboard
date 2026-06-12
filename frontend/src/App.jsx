@@ -439,9 +439,17 @@ export default function App() {
     setPhotoFitError(null)
     setPhotoFitStatus('submitting')
     try {
+      const maxImages = clampInteger(settings.photoFitMaxImages, 1, 16, 10) || 10
+      const maxUnlabeled = clampInteger(settings.photoFitMaxUnlabeled, 0, 10, 4)
+      const imageDetail = ['low', 'auto', 'high'].includes(settings.photoFitImageDetail)
+        ? settings.photoFitImageDetail
+        : 'low'
       const payload = {
         sync: true,
-        max_images: 10,
+        max_images: maxImages,
+        include_unlabeled: Boolean(settings.photoFitIncludeUnlabeled),
+        max_unlabeled: maxUnlabeled === null ? 4 : maxUnlabeled,
+        image_detail: imageDetail,
       }
       if (settings.llmModelOverride) {
         payload.model = settings.llmModelOverride
@@ -2015,6 +2023,87 @@ export default function App() {
                     }))
                   }
                 />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Use Photo Fit in comparisons</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Adds cached visual analysis to comparison reports when available.
+                  </p>
+                </div>
+                <Checkbox
+                  checked={settings.compareUsePhotoFit}
+                  onCheckedChange={(checked) =>
+                    setSettings((prev) => ({ ...prev, compareUsePhotoFit: Boolean(checked) }))
+                  }
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Photo Fit max photos (1-16)</Label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="16"
+                  value={settings.photoFitMaxImages || 10}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      photoFitMaxImages: clampInteger(event.target.value, 1, 16, 10) || 10,
+                    }))
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Lower values are faster and cheaper; higher values improve visual coverage.
+                </p>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Include unlabeled photo fallback</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Lets the model inspect a bounded sample when Airbnb has no room labels.
+                  </p>
+                </div>
+                <Checkbox
+                  checked={settings.photoFitIncludeUnlabeled}
+                  onCheckedChange={(checked) =>
+                    setSettings((prev) => ({ ...prev, photoFitIncludeUnlabeled: Boolean(checked) }))
+                  }
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Max unlabeled fallback photos (0-10)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="10"
+                  value={settings.photoFitMaxUnlabeled ?? 4}
+                  disabled={!settings.photoFitIncludeUnlabeled}
+                  onChange={(event) => {
+                    const value = clampInteger(event.target.value, 0, 10, 4)
+                    setSettings((prev) => ({
+                      ...prev,
+                      photoFitMaxUnlabeled: value === null ? 4 : value,
+                    }))
+                  }}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Photo Fit image detail</Label>
+                <select
+                  className="h-10 rounded-md border border-border bg-background px-3"
+                  value={settings.photoFitImageDetail || 'low'}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, photoFitImageDetail: event.target.value }))
+                  }
+                >
+                  <option value="low">Low</option>
+                  <option value="auto">Auto</option>
+                  <option value="high">High</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Low is fastest. Use auto or high only when visual detail is more important than latency.
+                </p>
               </div>
               <div className="flex items-center justify-between">
                 <Label>Require minimum review coverage to compare</Label>

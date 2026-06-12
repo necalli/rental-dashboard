@@ -44,9 +44,51 @@ class ComparisonMemoryTests(unittest.TestCase):
                     "url": "https://example.test/kitchen.jpg",
                     "caption": "Open kitchen",
                     "position": None,
+                    "source": "representative",
                 }
             ],
         )
+
+    def test_photo_fit_input_can_include_unlabeled_fallback(self) -> None:
+        listing = {
+            "id": "a",
+            "title": "Cabin A",
+            "photos": [
+                {"url": "https://example.test/one.jpg"},
+                {"url": "https://example.test/two.jpg"},
+                {"url": "https://example.test/three.jpg"},
+                {"url": "https://example.test/four.jpg"},
+            ],
+        }
+
+        payload = build_photo_fit_input(
+            listing,
+            max_images=3,
+            include_unlabeled=True,
+            max_unlabeled=2,
+            image_detail="auto",
+        )
+
+        self.assertEqual(len(payload["selected_photos"]), 2)
+        self.assertEqual(
+            {photo["source"] for photo in payload["selected_photos"]},
+            {"unlabeled_fallback"},
+        )
+        self.assertEqual(payload["selection_policy"]["include_unlabeled"], True)
+        self.assertEqual(payload["selection_policy"]["max_unlabeled"], 2)
+        self.assertEqual(payload["selection_policy"]["image_detail"], "auto")
+
+    def test_photo_fit_input_can_disable_unlabeled_fallback(self) -> None:
+        listing = {
+            "id": "a",
+            "title": "Cabin A",
+            "photos": [{"url": "https://example.test/one.jpg"}],
+        }
+
+        payload = build_photo_fit_input(listing, max_images=3, include_unlabeled=False)
+
+        self.assertEqual(payload["selected_photos"], [])
+        self.assertEqual(payload["selection_policy"]["include_unlabeled"], False)
 
     def test_comparison_input_can_include_cached_photo_fit(self) -> None:
         listings = [{"id": "a", "title": "Cabin A"}]

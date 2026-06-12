@@ -1182,8 +1182,22 @@ class JobRunner:
         reviews = self.storage.list_reviews(listing_id, limit=200)
         model = payload.get("model")
         max_images = _coerce_int_range(payload.get("max_images"), 1, 16)
+        include_unlabeled = (
+            _coerce_bool(payload.get("include_unlabeled")) if "include_unlabeled" in payload else None
+        )
+        max_unlabeled = _coerce_int_range(payload.get("max_unlabeled"), 0, 10)
+        image_detail = str(payload.get("image_detail") or "").strip().lower() or None
+        if image_detail not in {None, "low", "auto", "high"}:
+            image_detail = None
         if kind == "listing_photo_fit":
-            model, input_hash = build_photo_fit_request(listing, model=model, max_images=max_images)
+            model, input_hash = build_photo_fit_request(
+                listing,
+                model=model,
+                max_images=max_images,
+                include_unlabeled=include_unlabeled,
+                max_unlabeled=max_unlabeled,
+                image_detail=image_detail,
+            )
             prompt_version = PHOTO_FIT_PROMPT_VERSION
         else:
             model, input_hash = build_summary_request(listing, reviews, model=model)
@@ -1193,7 +1207,14 @@ class JobRunner:
 
         llm_started = time.monotonic()
         if kind == "listing_photo_fit":
-            output = generate_listing_photo_fit(listing, model=model, max_images=max_images)
+            output = generate_listing_photo_fit(
+                listing,
+                model=model,
+                max_images=max_images,
+                include_unlabeled=include_unlabeled,
+                max_unlabeled=max_unlabeled,
+                image_detail=image_detail,
+            )
         else:
             output = generate_listing_summary(listing, reviews, model=model)
         llm_ms = _elapsed_ms(llm_started)
@@ -1216,6 +1237,9 @@ class JobRunner:
                 "reviews_used": len(reviews),
                 "photo_count": len(listing.get("photos") or []) if kind == "listing_photo_fit" else None,
                 "max_images": max_images if kind == "listing_photo_fit" else None,
+                "include_unlabeled": include_unlabeled if kind == "listing_photo_fit" else None,
+                "max_unlabeled": max_unlabeled if kind == "listing_photo_fit" else None,
+                "image_detail": image_detail if kind == "listing_photo_fit" else None,
                 "llm_ms": llm_ms,
                 "persist_ms": persist_ms,
             }
